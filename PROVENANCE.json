@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "repository": "Team-Follow-Up-AI/funnel-builder-ui-public",
+  "history": "fresh-public-only",
+  "sourceDescription": "Standalone sanitized Funnels presentation with synthetic localhost fixtures",
+  "privateHistoryIncluded": false,
+  "files": [
+    { "sandboxPath": "public/app.js", "presentationRole": "Funnels panel behavior", "sandboxSha256": "642bc8e17627b36bf538df3f5d9dc6a617425045cde48c2ca90cc522b0dd3b95" },
+    { "sandboxPath": "public/styles.css", "presentationRole": "Builder presentation styles", "sandboxSha256": "5dbd60158ad81ce980eae0a6a3deb2f8a4ce8e2edd22da2aa751578f15053f1b" },
+    { "sandboxPath": "public/index.html", "presentationRole": "Standalone sandbox shell", "sandboxSha256": "2732e97828f4219d714bacfc5208f963302c01a8ebf39fe5f33ef0f1ff6e3d70" }
+  ],
+  "adaptations": [
+    "Replaced authenticated data and co-author transports with an explicit localhost fixture allowlist",
+    "Removed non-Funnels renderers and unreachable diagnostic or contact-mutation presentation code",
+    "Replaced operational names, identifiers, comments, and page values with synthetic public fixtures",
+    "Restricted preview URLs to the same loopback origin and disabled release, restore, verification, WebSocket, and automation actions"
+  ],
+  "assertions": [
+    "No private repository history or source identifiers are included",
+    "No credentials, real contact records, external runtime origins, provider clients, or deployment workflows are included",
+    "All data and previews are synthetic and local-only"
+  ]
+}

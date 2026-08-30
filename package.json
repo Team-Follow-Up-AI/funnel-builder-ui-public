@@ -1,0 +1,18 @@
+{
+  "name": "@team-follow-up-ai/funnel-builder-ui-public",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone localhost funnel builder UI sandbox with synthetic data",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.mjs",
+    "start": "node server.mjs",
+    "check": "node --check server.mjs && node --check fixtures.mjs && node --check public/app.js && node --check scripts/audit.mjs",
+    "audit": "node scripts/audit.mjs",
+    "test": "node --test --test-timeout=15000",
+    "validate": "npm run check && npm run audit && npm test"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

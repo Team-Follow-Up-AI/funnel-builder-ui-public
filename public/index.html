@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Funnel Studio Sandbox</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body data-mode="production">
+  <aside class="sandbox-banner" role="note">
+    <strong>PUBLIC LOCAL SANDBOX</strong>
+    Synthetic data only · no external services · release actions disabled
+  </aside>
+  <header class="bar">
+    <span class="brand">Funnel Studio</span>
+    <span class="real-flag" id="real-flag" hidden></span>
+    <span class="mode-line" id="mode-line">Loading local fixtures…</span>
+    <div class="toggle" role="group" aria-label="Environment" id="mode-toggle"></div>
+    <nav id="nav"></nav>
+  </header>
+  <main id="view"><p class="muted">Loading…</p></main>
+  <script src="/app.js"></script>
+</body>
+</html>
