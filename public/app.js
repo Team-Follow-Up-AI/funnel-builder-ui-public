@@ -749,7 +749,7 @@ async function renderFunnels(view, request) {
         const releases = history.ok ? history.releases || [] : [];
         const deploymentIdentity = deployedReleaseIdentity(releases);
         const liveRelease = deploymentIdentity.current;
-        const latestRelease = releases[0] || null;
+        const latestRelease = releases.find(release => release?.status !== "split_test") || null;
         const ordinaryDraftState = draftWorkspaceState({
             published: funnel.published,
             liveKnown: funnel.liveKnown,
@@ -1428,7 +1428,7 @@ async function renderFunnel(view, slug, request) {
     const releases = history.ok ? history.releases || [] : [];
     const deploymentIdentity = deployedReleaseIdentity(releases);
     const liveRelease = deploymentIdentity.current;
-    const latestRelease = releases[0] || null;
+    const latestRelease = releases.find(release => release?.status !== "split_test") || null;
     const draftState = draftWorkspaceState({
         published: published,
         liveKnown: liveKnown,
@@ -1514,7 +1514,9 @@ async function renderFunnel(view, slug, request) {
             class: "label"
         }, `v${release.version ?? "?"} · ${String(release.id || "").slice(0, 12) || "unknown SHA"}`, current ? el("span", {
             class: `pill ${currentComplete ? "live" : "blocker"}`
-        }, currentComplete ? "Current deployed" : "Current deployed, incomplete") : null, lastVerified ? el("span", {
+        }, currentComplete ? "Current deployed" : "Current deployed, incomplete") : null, release.status === "split_test" ? el("span", {
+            class: "pill env"
+        }, "Split test") : null, lastVerified ? el("span", {
             class: "pill"
         }, "Last verified") : null), el("div", {
             class: "headline"
@@ -2288,6 +2290,10 @@ function describeRelease(release) {
     const version = release?.version == null ? "unknown version" : `v${release.version}`;
     const id = typeof release?.id === "string" && release.id ? release.id.slice(0, 12) : "unknown SHA";
     const status = typeof release?.status === "string" && release.status ? release.status : "status_unavailable";
+    if (typeof release?.note === "string" && release.note) return {
+        status: status,
+        text: `Release ${version} (${id}). ${release.note}`
+    };
     const prefix = `Release ${version} (${id}) - ${status}. Public page values: ${publicPageValuesSummary(release)}.`;
     if (status === "deployed_verified") {
         return {

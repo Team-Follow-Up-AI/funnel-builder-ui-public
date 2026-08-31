@@ -54,6 +54,15 @@ const requestedMode = (req) => req.headers['x-demo-mode'] === 'production' ? 'pr
 
 const findFunnel = (slug, mode) => sandboxState[mode].find((item) => item.slug === slug);
 
+// Every split-test variation is its own funnel version. Base fixture releases
+// run v1-v3, so dynamic versions start at v4 and are stored per funnel.
+const pushRelease = (funnel, idPrefix, entry) => {
+  funnel.nextVersion = funnel.nextVersion || 4;
+  funnel.extraReleases = funnel.extraReleases || [];
+  const version = funnel.nextVersion++;
+  funnel.extraReleases.push({ id: `${idPrefix}-v${version}`, version, ...entry });
+};
+
 // Every finished split test — ended or decided — is archived so the console
 // can show what was tested previously.
 const archiveSplitTest = (funnel, outcome) => {
@@ -206,7 +215,16 @@ export const createSandboxServer = () => {
       if (value.winner !== 'control' && value.winner !== 'variation') {
         return reply(400, { success: false, error: "winner must be 'control' or 'variation'." });
       }
-      if (value.winner === 'variation') funnel.promotedVariation = structuredClone(funnel.splitTest.variation);
+      if (value.winner === 'variation') {
+        const split = funnel.splitTest;
+        funnel.promotedVariation = structuredClone(split.variation);
+        pushRelease(funnel, 'winner-b', {
+          status: 'deployed_verified',
+          committedAt: new Date().toISOString(),
+          deploymentVerification: { verifiedAt: new Date().toISOString() },
+          note: `"${split.variation.name}" won the split test (${split.observed.variation} vs ${split.observed.control} randomised visits) and is now the live funnel.`,
+        });
+      }
       archiveSplitTest(funnel, value.winner);
       return reply(200, { success: true, simulated: true, splitTest: null, history: structuredClone(funnel.splitTestHistory) });
     }
@@ -237,6 +255,11 @@ export const createSandboxServer = () => {
           variation: { key: 'variation-b', name, createdAt: new Date().toISOString(), duplicateOfControl: true },
           observed: { control: 0, variation: 0 },
         };
+        pushRelease(funnel, 'split-test-b', {
+          status: 'split_test',
+          committedAt: funnel.splitTest.variation.createdAt,
+          note: `Split-test variation "${name}" created as its own funnel version. It duplicates the control page and receives ${100 - weight}% of the randomised live traffic.`,
+        });
         return reply(201, { success: true, simulated: true, splitTest: structuredClone(funnel.splitTest) });
       }
       if (req.method === 'PUT') {
@@ -283,7 +306,9 @@ export const createSandboxServer = () => {
 
   if (url.pathname.startsWith('/api/coauthor')) {
     if (req.method === 'GET' && url.pathname === '/api/coauthor/releases') {
-      return json(res, 200, { ok: true, releases: scenario === 'empty' ? [] : releasesFor(url.searchParams.get('funnel') || 'fixture') });
+      const slug = url.searchParams.get('funnel') || 'fixture';
+      const extras = structuredClone(findFunnel(slug, 'production')?.extraReleases || []).reverse();
+      return json(res, 200, { ok: true, releases: scenario === 'empty' ? [] : [...extras, ...releasesFor(slug)] });
     }
     if (req.method === 'GET' && url.pathname === '/api/coauthor/status') {
       return json(res, 200, statusFor(url.searchParams.get('funnel') || 'fixture'));

@@ -32,9 +32,21 @@ const withSeededSplitTest = (funnels) => funnels.map((funnel) => funnel.slug !==
   splitTest: {
     status: 'running',
     controlWeight: 70,
-    variation: { key: 'variation-b', name: 'Variation B', createdAt: iso(3) },
+    variation: { key: 'variation-b', name: 'Variation B', createdAt: iso(1) },
     observed: { control: 534, variation: 229 },
   },
+  // Every split-test variation is its own funnel version; base fixture
+  // releases end at v3, so the seeded running variation is v4.
+  nextVersion: 5,
+  extraReleases: [
+    {
+      id: 'split-test-b-v4',
+      version: 4,
+      status: 'split_test',
+      committedAt: iso(1),
+      note: 'Split-test variation "Variation B" created as its own funnel version. It receives 30% of the randomised live traffic.',
+    },
+  ],
   splitTestHistory: [
     {
       variation: { key: 'variation-a1', name: 'Shorter Form', duplicateOfControl: false },

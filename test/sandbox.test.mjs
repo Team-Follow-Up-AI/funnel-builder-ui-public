@@ -204,6 +204,22 @@ test('picks winners and records split-test history', async () => {
   assert.equal(seeded.history[0].outcome, 'control', 'the seeded prior test stays in history');
 });
 
+test('records each split-test variation and promoted winner as a funnel version', async () => {
+  const summer = await fetch(`${origin}/api/coauthor/releases?funnel=summer-roofing-guide`).then((value) => value.json());
+  const splitVersions = summer.releases.filter((release) => release.status === 'split_test');
+  assert.equal(splitVersions.length, 2, 'both created variations must appear as their own versions');
+  assert.ok(splitVersions.every((release) => release.version > 3 && release.note.includes('created as its own funnel version')));
+  assert.equal(summer.releases[0].version, 5, 'dynamic versions are listed newest-first above the base fixtures');
+
+  const home = await fetch(`${origin}/api/coauthor/releases?funnel=home-value-workshop`).then((value) => value.json());
+  const winner = home.releases.find((release) => release.id.startsWith('winner-b'));
+  assert.ok(winner, 'promoting a winner must add a new version');
+  assert.equal(winner.status, 'deployed_verified');
+  assert.match(winner.note, /won the split test/);
+  assert.ok(winner.deploymentVerification?.verifiedAt, 'the promoted version becomes the newest verified deploy');
+  assert.ok(home.releases.some((release) => release.id === 'split-test-b-v4'), 'the seeded running variation is version v4');
+});
+
 test('presentation source retains upstream builder logic and sandbox rails', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(app, /function renderFunnels/);
