@@ -2379,6 +2379,33 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
         type: "datetime-local",
         "aria-label": `When to run the scheduled action for the ${page.label.toLowerCase()}`
     });
+    scheduleWhen.addEventListener("click", () => {
+        if (typeof scheduleWhen.showPicker === "function") try {
+            scheduleWhen.showPicker();
+        } catch {}
+    });
+    const toLocalInputValue = date => {
+        const pad = value => String(value).padStart(2, "0");
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    };
+    const tomorrowAt = hour => {
+        const date = new Date();
+        date.setDate(date.getDate() + 1);
+        date.setHours(hour, 0, 0, 0);
+        return date;
+    };
+    const presetChip = (label, dateFor) => el("button", {
+        class: "act",
+        type: "button",
+        onclick: () => {
+            scheduleWhen.value = toLocalInputValue(dateFor());
+        }
+    }, label);
+    const schedulePresets = el("div", {
+        class: "split-schedule-presets"
+    }, el("span", {
+        class: "muted"
+    }, "Quick pick:"), presetChip("In 1 hour", () => new Date(Date.now() + 36e5)), presetChip("Tomorrow 06:00", () => tomorrowAt(6)), presetChip("Tomorrow 09:00", () => tomorrowAt(9)), presetChip("Tomorrow 21:00", () => tomorrowAt(21)));
     const scheduleName = running ? null : el("input", {
         type: "text",
         value: "Variation B",
@@ -2440,7 +2467,7 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
         class: "split-schedule-form"
     }, el("span", {
         class: "muted"
-    }, running ? `Make ${page.splitTest.variation.name} the live page automatically at:` : "Start a split test on this page automatically at:"), scheduleName, scheduleWhen, scheduleButton), ...scheduleRows);
+    }, running ? `Make ${page.splitTest.variation.name} the live page automatically at:` : "Start a split test on this page automatically at:"), scheduleName, scheduleWhen, scheduleButton), schedulePresets, ...scheduleRows);
     return el("details", {
         class: "page-split-row"
     }, el("summary", {}, livePreviewThumb(splitArmUrl(base, "control"), page.label, PAGE_THUMB_WIDTH), el("div", {
