@@ -8,12 +8,12 @@
     {
       "sandboxPath": "public/app.js",
       "presentationRole": "Funnels panel behavior",
-      "sandboxSha256": "81ff90900b5053a0c02a15adc09413e8ea909135a62e61adad3ce1a38b8c1bd5"
+      "sandboxSha256": "b22a7eed5e8d9730a72b63c357bd901cd587a3cb640008688963dcfc1bf52f33"
     },
     {
       "sandboxPath": "public/styles.css",
       "presentationRole": "Builder presentation styles",
-      "sandboxSha256": "ab01e1183dc6259edd36d57f745cab228ce28c1b87bf9f920507b2ad1b466def"
+      "sandboxSha256": "4620ffc4a3544e24de22adf9f1063f917c863a54e0a4c33f7be264f125241176"
     },
     {
       "sandboxPath": "public/index.html",

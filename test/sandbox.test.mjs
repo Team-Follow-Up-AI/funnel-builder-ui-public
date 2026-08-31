@@ -312,3 +312,40 @@ test('splits pages independently and tracks synthetic views and opt-ins', async 
   assert.match(confirmationArm, /SYNTHETIC SPLIT-TEST ARM - WARMER THANKS/);
   assert.match(confirmationArm, /You are registered/, 'the confirmation variation starts as a duplicate');
 });
+
+test('runs scheduled split-test starts and variation launches', async () => {
+  const post = (body) => fetch(`${origin}/api/marketing/funnels/home-value-workshop/schedules`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const future = new Date(Date.now() + 60_000).toISOString();
+  assert.equal((await post({ page: 'confirmation', action: 'explode', at: future })).status, 400);
+  assert.equal((await post({ page: 'checkout', action: 'start_split', at: future })).status, 404);
+  assert.equal((await post({ page: 'confirmation', action: 'start_split', at: new Date(Date.now() - 1000).toISOString() })).status, 400, 'past times are rejected');
+
+  const created = await post({ page: 'confirmation', action: 'start_split', at: new Date(Date.now() + 120).toISOString(), name: 'Night Owl', controlWeight: 60 });
+  assert.equal(created.status, 201);
+  const scheduleId = (await created.json()).schedule.id;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const started = await fetch(`${origin}/api/marketing/funnels/home-value-workshop/split-test`).then((value) => value.json());
+  const confirmationSplit = started.pages.find((page) => page.key === 'confirmation').splitTest;
+  assert.equal(confirmationSplit?.status, 'running', 'the scheduled split test starts on time');
+  assert.equal(confirmationSplit.variation.name, 'Night Owl');
+  assert.equal(confirmationSplit.controlWeight, 60);
+  assert.equal(started.schedules.find((item) => item.id === scheduleId).status, 'done');
+
+  const launch = await post({ page: 'confirmation', action: 'promote_variation', at: new Date(Date.now() + 120).toISOString() });
+  assert.equal(launch.status, 201);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const swapped = await fetch(`${origin}/api/marketing/funnels/home-value-workshop/split-test`).then((value) => value.json());
+  assert.equal(swapped.pages.find((page) => page.key === 'confirmation').splitTest, null, 'the scheduled launch ends the test');
+  assert.equal(swapped.history.at(-1).outcome, 'variation', 'the variation is promoted automatically');
+  assert.equal(swapped.history.at(-1).variation.name, 'Night Owl');
+
+  const cancellable = await post({ page: 'confirmation', action: 'start_split', at: new Date(Date.now() + 3_600_000).toISOString() });
+  const cancelId = (await cancellable.json()).schedule.id;
+  const cancelled = await fetch(`${origin}/api/marketing/funnels/home-value-workshop/schedules/${cancelId}`, { method: 'DELETE' });
+  assert.equal(cancelled.status, 200);
+  assert.equal((await fetch(`${origin}/api/marketing/funnels/home-value-workshop/schedules/${cancelId}`, { method: 'DELETE' })).status, 404);
+  const remaining = await fetch(`${origin}/api/marketing/funnels/home-value-workshop/schedules`).then((value) => value.json());
+  assert.ok(!remaining.schedules.some((item) => item.id === cancelId), 'cancelled schedules never run');
+});

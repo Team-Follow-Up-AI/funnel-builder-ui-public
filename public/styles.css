@@ -533,6 +533,11 @@ iframe.preview { display: block; border: none; background: #fff; overflow: auto;
 .stat-label { font-size: 11.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
 .stat-value { font-size: 26px; font-weight: 640; color: var(--text); font-variant-numeric: tabular-nums; }
 
+.split-schedule { border-top: 1px solid var(--border); padding: 10px 15px; display: grid; gap: 8px; justify-items: start; }
+.split-schedule-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.split-schedule input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; color: var(--text); font: inherit; font-size: 12.5px; color-scheme: dark; }
+.split-schedule-row { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+
 .page-split-row { border-top: 1px solid var(--border); }
 .page-split-row summary { display: flex; gap: 14px; padding: 11px 15px; align-items: center; cursor: pointer; list-style: none; }
 .page-split-row summary::-webkit-details-marker { display: none; }

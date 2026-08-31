@@ -121,6 +121,81 @@ const previewDocument = (slug, kind, { page = FUNNEL_PAGES[0], variation = null,
 <small>Fixture: ${slug} (${page.label.toLowerCase()}${variation ? `, ${variation.key}${variation.duplicateOfControl ? ', duplicated from control' : ''}` : ''}). This page is generated locally and cannot submit, track, or navigate externally.</small></main></body></html>`;
 };
 
+// Starting a test and deciding its winner are shared between the API routes
+// and the scheduler, so a scheduled action behaves exactly like a manual one.
+const startSplitTest = (funnel, slug, pageDef, name, weight) => {
+  funnel.splitTests = funnel.splitTests || {};
+  const split = {
+    status: 'running',
+    controlWeight: weight,
+    variation: { key: 'variation-b', name, createdAt: new Date().toISOString(), duplicateOfControl: true },
+    observed: { control: 0, variation: 0 },
+    optins: { control: 0, variation: 0 },
+  };
+  funnel.splitTests[pageDef.key] = split;
+  split.versionNumber = pushRelease(funnel, slug, 'split-test-b', {
+    status: 'split_test',
+    committedAt: split.variation.createdAt,
+    page: pageDef.key,
+    variation: structuredClone(split.variation),
+    note: `Split-test variation "${name}" created as its own funnel version on the ${pageDef.label}. It duplicates the control page and receives ${100 - weight}% of the randomised live traffic.`,
+  });
+  return split;
+};
+
+const decideSplitWinner = (funnel, slug, pageDef, winner) => {
+  const split = funnel.splitTests[pageDef.key];
+  if (winner === 'variation') {
+    funnel.promotedVariations = funnel.promotedVariations || {};
+    funnel.promotedVariations[pageDef.key] = structuredClone(split.variation);
+    pushRelease(funnel, slug, 'winner-b', {
+      status: 'deployed_verified',
+      committedAt: new Date().toISOString(),
+      deploymentVerification: { verifiedAt: new Date().toISOString() },
+      page: pageDef.key,
+      variation: structuredClone(split.variation),
+      note: `"${split.variation.name}" won the split test on the ${pageDef.label} (${split.observed.variation} vs ${split.observed.control} randomised visits) and is now the live page.`,
+    });
+  }
+  archiveSplitTest(funnel, pageDef, winner);
+};
+
+// Scheduled actions: a funnel can queue "start this split test" or "make the
+// variation the live page" for a moment in the future (e.g. overnight). The
+// sweep runs on every request and on a background timer, so swaps happen on
+// time even with the console closed. Everything stays in-memory synthetic.
+let scheduleSeq = 1;
+
+const runDueSchedules = () => {
+  const now = Date.now();
+  for (const funnel of sandboxState.production) {
+    for (const item of funnel.schedules || []) {
+      if (item.status !== 'pending') continue;
+      const due = Date.parse(item.at);
+      if (!Number.isFinite(due) || due > now) continue;
+      const pageDef = FUNNEL_PAGES.find((page) => page.key === item.page);
+      try {
+        if (!pageDef) throw new Error('Unknown synthetic page.');
+        if (item.action === 'start_split') {
+          if (funnel.splitTests?.[pageDef.key]) throw new Error('A split test was already running on this page.');
+          startSplitTest(funnel, funnel.slug, pageDef, item.name || 'Variation B', Number.isInteger(item.controlWeight) ? item.controlWeight : 50);
+          item.result = `Split test started with "${item.name || 'Variation B'}".`;
+        } else {
+          if (!funnel.splitTests?.[pageDef.key]) throw new Error('No split test was running to promote.');
+          const variationName = funnel.splitTests[pageDef.key].variation.name;
+          decideSplitWinner(funnel, funnel.slug, pageDef, 'variation');
+          item.result = `"${variationName}" is now the live page.`;
+        }
+        item.status = 'done';
+      } catch (error) {
+        item.status = 'failed';
+        item.result = error.message;
+      }
+      item.completedAt = new Date().toISOString();
+    }
+  }
+};
+
 /** Weighted, sticky arm assignment for a running split test. Stickiness is
  * per funnel page. Forced arms (the console's side-by-side previews) never
  * count as visits or set the cookie. */
@@ -176,6 +251,7 @@ export const createSandboxServer = () => {
   }
 
   const url = new URL(req.url || '/', `http://${host}`);
+  runDueSchedules();
   const scenario = scenarioFor(req, url);
   if (scenario === 'loading' && url.pathname.startsWith('/api/')) {
     await new Promise((resolve) => setTimeout(resolve, 1_200));
@@ -289,19 +365,7 @@ export const createSandboxServer = () => {
       if (value.winner !== 'control' && value.winner !== 'variation') {
         return reply(400, { success: false, error: "winner must be 'control' or 'variation'." });
       }
-      if (value.winner === 'variation') {
-        funnel.promotedVariations = funnel.promotedVariations || {};
-        funnel.promotedVariations[pageDef.key] = structuredClone(split.variation);
-        pushRelease(funnel, winnerMatch[1], 'winner-b', {
-          status: 'deployed_verified',
-          committedAt: new Date().toISOString(),
-          deploymentVerification: { verifiedAt: new Date().toISOString() },
-          page: pageDef.key,
-          variation: structuredClone(split.variation),
-          note: `"${split.variation.name}" won the split test on the ${pageDef.label} (${split.observed.variation} vs ${split.observed.control} randomised visits) and is now the live page.`,
-        });
-      }
-      archiveSplitTest(funnel, pageDef, value.winner);
+      decideSplitWinner(funnel, winnerMatch[1], pageDef, value.winner);
       return reply(200, { success: true, simulated: true, history: structuredClone(funnel.splitTestHistory) });
     }
 
@@ -321,21 +385,8 @@ export const createSandboxServer = () => {
         if (!Number.isInteger(weight) || weight < 0 || weight > 100) {
           return reply(400, { success: false, error: 'controlWeight must be an integer between 0 and 100.' });
         }
-        funnel.splitTests[pageDef.key] = {
-          status: 'running',
-          controlWeight: weight,
-          variation: { key: 'variation-b', name, createdAt: new Date().toISOString(), duplicateOfControl: true },
-          observed: { control: 0, variation: 0 },
-          optins: { control: 0, variation: 0 },
-        };
-        funnel.splitTests[pageDef.key].versionNumber = pushRelease(funnel, splitPageMatch[1], 'split-test-b', {
-          status: 'split_test',
-          committedAt: funnel.splitTests[pageDef.key].variation.createdAt,
-          page: pageDef.key,
-          variation: structuredClone(funnel.splitTests[pageDef.key].variation),
-          note: `Split-test variation "${name}" created as its own funnel version on the ${pageDef.label}. It duplicates the control page and receives ${100 - weight}% of the randomised live traffic.`,
-        });
-        return reply(201, { success: true, simulated: true, splitTest: structuredClone(funnel.splitTests[pageDef.key]) });
+        const split = startSplitTest(funnel, splitPageMatch[1], pageDef, name, weight);
+        return reply(201, { success: true, simulated: true, splitTest: structuredClone(split) });
       }
       if (req.method === 'PUT') {
         const split = funnel.splitTests[pageDef.key];
@@ -369,7 +420,53 @@ export const createSandboxServer = () => {
           splitTest: funnel.splitTests?.[item.key] ? structuredClone(funnel.splitTests[item.key]) : null,
         })),
         history: structuredClone(funnel.splitTestHistory || []),
+        schedules: structuredClone(funnel.schedules || []),
       });
+    }
+
+    const scheduleMatch = path.match(/^\/funnels\/([a-z0-9-]+)\/schedules(?:\/([a-z0-9-]+))?$/);
+    if (scheduleMatch) {
+      const funnel = findFunnel(scheduleMatch[1], 'production');
+      if (!funnel) return reply(404, { success: false, error: 'Synthetic funnel not found.' });
+      funnel.schedules = funnel.schedules || [];
+      if (req.method === 'GET' && !scheduleMatch[2]) {
+        return reply(200, { success: true, schedules: structuredClone(funnel.schedules) });
+      }
+      if (req.method === 'POST' && !scheduleMatch[2]) {
+        let value;
+        try { value = await bodyJson(req); } catch (error) { return reply(400, { success: false, error: error.message }); }
+        const pageDef = FUNNEL_PAGES.find((item) => item.key === value.page);
+        if (!pageDef) return reply(404, { success: false, error: 'Unknown synthetic page.' });
+        if (value.action !== 'start_split' && value.action !== 'promote_variation') {
+          return reply(400, { success: false, error: "action must be 'start_split' or 'promote_variation'." });
+        }
+        const due = Date.parse(value.at);
+        if (!Number.isFinite(due)) return reply(400, { success: false, error: 'at must be a parseable timestamp.' });
+        if (due <= Date.now()) return reply(400, { success: false, error: 'at must be in the future.' });
+        const weight = value.controlWeight === undefined ? 50 : Number(value.controlWeight);
+        if (!Number.isInteger(weight) || weight < 0 || weight > 100) {
+          return reply(400, { success: false, error: 'controlWeight must be an integer between 0 and 100.' });
+        }
+        const schedule = {
+          id: `sch-${scheduleSeq++}`,
+          page: pageDef.key,
+          action: value.action,
+          at: new Date(due).toISOString(),
+          name: String(value.name || 'Variation B').replace(/[^\w .-]/g, '').trim().slice(0, 60) || 'Variation B',
+          controlWeight: weight,
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        };
+        funnel.schedules.push(schedule);
+        return reply(201, { success: true, simulated: true, schedule: structuredClone(schedule) });
+      }
+      if (req.method === 'DELETE' && scheduleMatch[2]) {
+        const index = funnel.schedules.findIndex((item) => item.id === scheduleMatch[2]);
+        if (index === -1) return reply(404, { success: false, error: 'Synthetic schedule not found.' });
+        funnel.schedules.splice(index, 1);
+        return reply(200, { success: true, simulated: true });
+      }
+      return reply(405, { success: false, error: 'Unsupported schedule method.' });
     }
 
     const stateMatch = path.match(/^\/funnels\/([a-z0-9-]+)\/(go-live|pause)$/);
@@ -479,6 +576,9 @@ export const createSandboxServer = () => {
   server.on('upgrade', (_req, socket) => {
     socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
   });
+  const scheduleTimer = setInterval(runDueSchedules, 10_000);
+  scheduleTimer.unref();
+  server.on('close', () => clearInterval(scheduleTimer));
   return server;
 };
 
