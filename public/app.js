@@ -2262,7 +2262,7 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
             class: "split-flag"
         }, "⏱ Schedule"), el("span", {
             class: "muted"
-        }, pending ? "Or start this split test automatically later instead of saving it now:" : `Make ${split.variation.name} the live page automatically at:`), el("div", {
+        }, pending ? "Start this split test automatically at:" : `Make ${split.variation.name} the live page automatically at:`), el("div", {
             class: "split-schedule-form"
         }, scheduleWhen, scheduleButton), el("div", {
             class: "split-schedule-presets"
@@ -2344,7 +2344,7 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
             class: "act go",
             type: "button",
             disabled: !pending
-        }, pending ? "Save variation" : "Save");
+        }, pending ? "▶ Start split test immediately" : "Save");
         slider.addEventListener("input", () => {
             controlWeight = Number(slider.value);
             paintReadout();
@@ -2413,9 +2413,7 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
                 say(ended.error || "The split test could not be ended.", true);
             }
         }, pending ? "Discard variation" : "End split test");
-        content.replaceChildren(el("div", {
-            class: "split-grid"
-        }, splitArmPanel({
+        const controlCell = splitArmPanel({
             flag: "Control",
             name: "Variation A",
             weightPill: controlWeightPill,
@@ -2425,7 +2423,30 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
             visits: split.observed?.control,
             optins: split.optins?.control,
             pickWinner: pending ? null : pickWinner("control", "Variation A")
-        }), el("div", {
+        });
+        const scheduleBox = buildScheduleBox({
+            pending: pending,
+            split: split,
+            slider: slider
+        });
+        let scheduleToggle = null;
+        if (pending) {
+            scheduleBox.style.display = "none";
+            scheduleToggle = el("button", {
+                class: "act",
+                type: "button",
+                "aria-expanded": "false"
+            }, "⏱ Schedule split test");
+            scheduleToggle.addEventListener("click", () => {
+                const open = scheduleBox.style.display === "none";
+                scheduleBox.style.display = open ? "" : "none";
+                scheduleToggle.setAttribute("aria-expanded", String(open));
+                scheduleToggle.classList.toggle("go", open);
+            });
+        }
+        content.replaceChildren(el("div", {
+            class: "split-grid"
+        }, controlCell, el("div", {
             class: "split-middle"
         }, el("span", {
             class: "split-flag"
@@ -2443,14 +2464,10 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
             visits: split.observed?.variation,
             optins: split.optins?.variation,
             pickWinner: pending ? null : pickWinner("variation", split.variation.name)
-        }), buildScheduleBox({
-            pending: pending,
-            split: split,
-            slider: slider
-        }))), el("div", {
+        }), scheduleBox)), el("div", {
             class: "split-save"
-        }, saveButton));
-        say(pending ? "Unsaved variation. It duplicates the current page; live traffic is unchanged until you save." : "");
+        }, saveButton, scheduleToggle));
+        say(pending ? "Unsaved variation. It duplicates the current page; live traffic is unchanged until you start or schedule the test." : "");
     };
     if (page.splitTest && page.splitTest.status === "running") renderArms(page.splitTest); else renderEmpty();
     const scheduleRows = [ ...schedules ].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).map(item => el("div", {
