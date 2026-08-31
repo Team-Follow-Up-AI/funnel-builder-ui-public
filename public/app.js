@@ -2196,6 +2196,80 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
     const describeSchedule = item => item.action === "start_split" ? `Start split test ("${item.name}")` : "Make the variation live";
     const pendingSchedules = schedules.filter(item => item.status === "pending").sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
     const scheduleHint = pendingSchedules.length ? ` · ⏱ ${describeSchedule(pendingSchedules[0])} ${when(pendingSchedules[0].at)}` : "";
+    const toLocalInputValue = date => {
+        const pad = value => String(value).padStart(2, "0");
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    };
+    const tomorrowAt = hour => {
+        const date = new Date();
+        date.setDate(date.getDate() + 1);
+        date.setHours(hour, 0, 0, 0);
+        return date;
+    };
+    // The schedule controls live directly under the variation panel, so they
+    // only exist while a variation does: an unsaved variation can be
+    // scheduled to start later instead of saving it now, and a running
+    // test's variation can be scheduled to become the live page.
+    const buildScheduleBox = ({pending: pending, split: split, slider: slider}) => {
+        const scheduleWhen = el("input", {
+            type: "datetime-local",
+            "aria-label": `When to run the scheduled action for the ${page.label.toLowerCase()}`
+        });
+        scheduleWhen.addEventListener("click", () => {
+            if (typeof scheduleWhen.showPicker === "function") try {
+                scheduleWhen.showPicker();
+            } catch {}
+        });
+        const presetChip = (label, dateFor) => el("button", {
+            class: "act",
+            type: "button",
+            onclick: () => {
+                scheduleWhen.value = toLocalInputValue(dateFor());
+            }
+        }, label);
+        const scheduleButton = el("button", {
+            class: "act",
+            type: "button"
+        }, "⏱ Schedule");
+        scheduleButton.addEventListener("click", async () => {
+            if (!scheduleWhen.value) return say("Pick a date and time for the schedule first.", true);
+            const at = new Date(scheduleWhen.value);
+            if (!(at.getTime() > Date.now())) return say("The scheduled time must be in the future.", true);
+            scheduleButton.disabled = true;
+            const created = await api(`/funnels/${slug}/schedules`, {
+                mode: "production",
+                method: "POST",
+                body: pending ? {
+                    page: page.key,
+                    action: "start_split",
+                    at: at.toISOString(),
+                    name: split.variation.name,
+                    controlWeight: Number(slider.value)
+                } : {
+                    page: page.key,
+                    action: "promote_variation",
+                    at: at.toISOString()
+                },
+                syncChrome: false
+            });
+            if (created.success) return route();
+            scheduleButton.disabled = false;
+            say(created.error || "The schedule could not be saved.", true);
+        });
+        return el("div", {
+            class: "split-arm-schedule"
+        }, el("span", {
+            class: "split-flag"
+        }, "⏱ Schedule"), el("span", {
+            class: "muted"
+        }, pending ? "Or start this split test automatically later instead of saving it now:" : `Make ${split.variation.name} the live page automatically at:`), el("div", {
+            class: "split-schedule-form"
+        }, scheduleWhen, scheduleButton), el("div", {
+            class: "split-schedule-presets"
+        }, el("span", {
+            class: "muted"
+        }, "Quick pick:"), presetChip("In 1 hour", () => new Date(Date.now() + 36e5)), presetChip("Tomorrow 06:00", () => tomorrowAt(6)), presetChip("Tomorrow 09:00", () => tomorrowAt(9)), presetChip("Tomorrow 21:00", () => tomorrowAt(21))));
+    };
     const renderEmpty = () => {
         setStatus("", "");
         summaryLine.textContent = "No split test running." + scheduleHint;
@@ -2357,7 +2431,9 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
             class: "split-flag"
         }, "Traffic split"), slider, readout, el("span", {
             class: "muted"
-        }, "Each new visitor is randomised to hold this split. Returning visitors keep the page they first saw."), middleButton), splitArmPanel({
+        }, "Each new visitor is randomised to hold this split. Returning visitors keep the page they first saw."), middleButton), el("div", {
+            class: "split-arm-stack"
+        }, splitArmPanel({
             flag: "Variation",
             name: split.variation.name,
             weightPill: variationWeightPill,
@@ -2367,75 +2443,16 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
             visits: split.observed?.variation,
             optins: split.optins?.variation,
             pickWinner: pending ? null : pickWinner("variation", split.variation.name)
-        })), el("div", {
+        }), buildScheduleBox({
+            pending: pending,
+            split: split,
+            slider: slider
+        }))), el("div", {
             class: "split-save"
         }, saveButton));
         say(pending ? "Unsaved variation. It duplicates the current page; live traffic is unchanged until you save." : "");
     };
     if (page.splitTest && page.splitTest.status === "running") renderArms(page.splitTest); else renderEmpty();
-    const running = Boolean(page.splitTest && page.splitTest.status === "running");
-    const scheduleAction = running ? "promote_variation" : "start_split";
-    const scheduleWhen = el("input", {
-        type: "datetime-local",
-        "aria-label": `When to run the scheduled action for the ${page.label.toLowerCase()}`
-    });
-    scheduleWhen.addEventListener("click", () => {
-        if (typeof scheduleWhen.showPicker === "function") try {
-            scheduleWhen.showPicker();
-        } catch {}
-    });
-    const toLocalInputValue = date => {
-        const pad = value => String(value).padStart(2, "0");
-        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-    };
-    const tomorrowAt = hour => {
-        const date = new Date();
-        date.setDate(date.getDate() + 1);
-        date.setHours(hour, 0, 0, 0);
-        return date;
-    };
-    const presetChip = (label, dateFor) => el("button", {
-        class: "act",
-        type: "button",
-        onclick: () => {
-            scheduleWhen.value = toLocalInputValue(dateFor());
-        }
-    }, label);
-    const schedulePresets = el("div", {
-        class: "split-schedule-presets"
-    }, el("span", {
-        class: "muted"
-    }, "Quick pick:"), presetChip("In 1 hour", () => new Date(Date.now() + 36e5)), presetChip("Tomorrow 06:00", () => tomorrowAt(6)), presetChip("Tomorrow 09:00", () => tomorrowAt(9)), presetChip("Tomorrow 21:00", () => tomorrowAt(21)));
-    const scheduleName = running ? null : el("input", {
-        type: "text",
-        value: "Variation B",
-        maxlength: "60",
-        "aria-label": "Name for the scheduled variation"
-    });
-    const scheduleButton = el("button", {
-        class: "act",
-        type: "button"
-    }, running ? "⏱ Schedule launch" : "⏱ Schedule split test");
-    scheduleButton.addEventListener("click", async () => {
-        if (!scheduleWhen.value) return say("Pick a date and time for the schedule first.", true);
-        const at = new Date(scheduleWhen.value);
-        if (!(at.getTime() > Date.now())) return say("The scheduled time must be in the future.", true);
-        scheduleButton.disabled = true;
-        const created = await api(`/funnels/${slug}/schedules`, {
-            mode: "production",
-            method: "POST",
-            body: {
-                page: page.key,
-                action: scheduleAction,
-                at: at.toISOString(),
-                name: scheduleName ? scheduleName.value : undefined
-            },
-            syncChrome: false
-        });
-        if (created.success) return route();
-        scheduleButton.disabled = false;
-        say(created.error || "The schedule could not be saved.", true);
-    });
     const scheduleRows = [ ...schedules ].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).map(item => el("div", {
         class: "split-schedule-row"
     }, el("span", {
@@ -2459,15 +2476,11 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
     }, item.status === "done" ? "Done" : "Failed"), item.result ? el("span", {
         class: "muted"
     }, item.result) : null));
-    const scheduleSection = el("div", {
+    const scheduleQueue = scheduleRows.length ? el("div", {
         class: "split-schedule"
     }, el("span", {
         class: "split-flag"
-    }, "⏱ Schedule"), el("div", {
-        class: "split-schedule-form"
-    }, el("span", {
-        class: "muted"
-    }, running ? `Make ${page.splitTest.variation.name} the live page automatically at:` : "Start a split test on this page automatically at:"), scheduleName, scheduleWhen, scheduleButton), schedulePresets, ...scheduleRows);
+    }, "⏱ Scheduled"), ...scheduleRows) : null;
     return el("details", {
         class: "page-split-row"
     }, el("summary", {}, livePreviewThumb(splitArmUrl(base, "control"), page.label, PAGE_THUMB_WIDTH), el("div", {
@@ -2477,7 +2490,7 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
     }, page.label, statusPill), summaryLine), el("span", {
         class: "version-caret",
         "aria-hidden": "true"
-    }, "▸")), content, scheduleSection, notice);
+    }, "▸")), content, scheduleQueue, notice);
 }
 
 const VERSION_THUMB_WIDTH = 132;

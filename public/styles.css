@@ -534,10 +534,12 @@ iframe.preview { display: block; border: none; background: #fff; overflow: auto;
 .stat-value { font-size: 26px; font-weight: 640; color: var(--text); font-variant-numeric: tabular-nums; }
 
 .split-schedule { border-top: 1px solid var(--border); padding: 10px 15px; display: grid; gap: 8px; justify-items: start; }
+.split-arm-stack { display: grid; gap: 12px; min-width: 0; align-content: start; }
+.split-arm-schedule { border: 1px dashed var(--border); border-radius: 8px; padding: 10px 12px; display: grid; gap: 8px; justify-items: start; }
 .split-schedule-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.split-schedule input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; color: var(--text); font: inherit; font-size: 12.5px; color-scheme: dark; }
-.split-schedule input[type='datetime-local'] { cursor: pointer; }
-.split-schedule input[type='datetime-local']::-webkit-calendar-picker-indicator { cursor: pointer; opacity: .8; }
+.split-schedule input, .split-arm-schedule input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; color: var(--text); font: inherit; font-size: 12.5px; color-scheme: dark; }
+.split-schedule input[type='datetime-local'], .split-arm-schedule input[type='datetime-local'] { cursor: pointer; }
+.split-schedule input[type='datetime-local']::-webkit-calendar-picker-indicator, .split-arm-schedule input[type='datetime-local']::-webkit-calendar-picker-indicator { cursor: pointer; opacity: .8; }
 .split-schedule-presets { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
 .split-schedule-row { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
 
