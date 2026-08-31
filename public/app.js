@@ -586,6 +586,36 @@ function mergeFunnelWorkspace(liveFunnels = [], testFunnels = [], {liveKnown: li
     });
 }
 
+const LIVE_THUMB_WIDTH = 148;
+
+function livePreviewThumb(canonicalUrl, slug) {
+    const device = PREVIEW_DEVICES.desktop;
+    const scale = LIVE_THUMB_WIDTH / device.width;
+    const frame = el("iframe", {
+        class: "preview",
+        title: `Read-only live preview of ${slug}`,
+        scrolling: "no",
+        loading: "lazy",
+        tabindex: "-1",
+        "aria-hidden": "true",
+        ...previewFrameAttributes(canonicalUrl)
+    });
+    frame.style.width = `${device.width}px`;
+    frame.style.height = `${device.height}px`;
+    const scaler = el("div", {
+        class: "preview-scaler"
+    }, frame);
+    scaler.style.width = `${device.width}px`;
+    scaler.style.height = `${device.height}px`;
+    scaler.style.transform = `scale(${scale})`;
+    const stage = el("div", {
+        class: "preview-stage live-thumb"
+    }, scaler);
+    stage.style.width = `${device.width * scale}px`;
+    stage.style.height = `${device.height * scale}px`;
+    return stage;
+}
+
 function funnelPageCell(f) {
     if (!f.published) {
         return el("td", {}, el("span", {
@@ -598,13 +628,15 @@ function funnelPageCell(f) {
     }, "Canonical link unavailable");
     return el("td", {
         class: "mono"
-    }, el("a", {
+    }, el("div", {
+        class: "page-cell"
+    }, livePreviewThumb(f.canonicalUrl, f.slug), el("a", {
         href: f.canonicalUrl,
         target: "_blank",
         rel: "noopener",
         title: `Open ${f.slug}'s current canonical live page`,
         onclick: event => event.stopPropagation()
-    }, "Open live"));
+    }, "Open live")));
 }
 
 const FUNNEL_COLUMNS = [ {

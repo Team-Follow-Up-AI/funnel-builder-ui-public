@@ -514,6 +514,9 @@ iframe.preview { display: block; border: none; background: #fff; overflow: auto;
   .live-preview-canvas { height: 340px; }
 }
 
+.page-cell { display: flex; align-items: center; gap: 10px; }
+.live-thumb { flex: 0 0 auto; overflow: hidden; border: 1px solid var(--border); border-radius: 4px; background: #fff; pointer-events: none; }
+
 .pill.env { color: var(--mode); border-color: var(--mode); text-transform: none; letter-spacing: 0; }
 
 
