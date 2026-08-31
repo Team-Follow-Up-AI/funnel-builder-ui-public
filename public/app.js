@@ -279,6 +279,8 @@ function route() {
     }, "Loading…"));
     const build = hash.match(/^#\/funnels\/([a-z0-9-]+)\/build(?:\/(variation))?$/i);
     if (build) return renderBuild(view, build[1], request, build[2] ? "variation" : "control");
+    const performance = hash.match(/^#\/funnels\/([a-z0-9-]+)\/performance$/i);
+    if (performance) return renderPerformance(view, performance[1], request);
     const detail = hash.match(/^#\/funnels\/([a-z0-9-]+)/i);
     if (detail) return renderFunnel(view, detail[1], request);
     const hit = ROUTES.find(r => hash.startsWith(r.hash)) || ROUTES[0];
@@ -1501,7 +1503,7 @@ async function renderFunnel(view, slug, request) {
         }, `Latest release is incomplete. ${describeRelease(latestRelease).text}`));
     }
     if (published) wrap.append(readOnlyConfigCard(c));
-    if (published && c.metrics) wrap.append(performanceCard(c.metrics));
+    if (published && c.metrics) wrap.append(performanceCard(slug, c.metrics, liveRelease));
     if (published && productionUrl) wrap.append(splitTestCard(slug, productionUrl, splitState, testConfig.success));
     const releaseRows = releases.length ? releases.map(release => versionRow(slug, release, deploymentIdentity, splitState)) : [ el("div", {
         class: history.ok ? "body muted" : "body err"
@@ -2006,7 +2008,7 @@ function splitArmPanel({flag: flag, name: name, weightPill: weightPill, url: url
 
 const PAGE_THUMB_WIDTH = 148;
 
-function performanceCard(metrics) {
+function statTiles(metrics) {
     const views = Number(metrics.views) || 0;
     const optins = Number(metrics.optins) || 0;
     const rate = views > 0 ? `${(optins / views * 100).toFixed(1)}%` : "—";
@@ -2020,12 +2022,109 @@ function performanceCard(metrics) {
         class: "muted"
     }, hint) : null);
     return el("div", {
+        class: "stat-grid"
+    }, tile("Views", views.toLocaleString(), "Registration page loads"), tile("Opt-ins", optins.toLocaleString(), "Simulated form submissions"), tile("Opt-in rate", rate, views > 0 ? `${optins.toLocaleString()} of ${views.toLocaleString()} views` : "No views yet"));
+}
+
+const releaseDisplayName = release => release.name || String(release.id || "").slice(0, 12) || "unknown SHA";
+
+function performanceCard(slug, metrics, liveRelease) {
+    return el("div", {
         class: "card"
-    }, el("h2", {}, "Performance", el("span", {
+    }, el("h2", {}, el("a", {
+        class: "perf-link",
+        href: `#/funnels/${slug}/performance`,
+        title: "See the performance of every version of this funnel."
+    }, "Performance", el("span", {
+        class: "perf-link-arrow",
+        "aria-hidden": "true"
+    }, "→")), el("span", {
+        class: "pill env"
+    }, "Synthetic"), liveRelease ? el("span", {
+        class: "perf-showing"
+    }, `Showing: v${liveRelease.version ?? "?"} · ${releaseDisplayName(liveRelease)} (current live version)`) : null), statTiles(metrics));
+}
+
+// Drill-down route: the performance of every version of one funnel, in a
+// table. Reached by clicking the Performance header on the funnel page.
+async function renderPerformance(view, slug, request) {
+    const [liveConfig, splitState, history] = await Promise.all([ api(`/funnels/${slug}/config`, {
+        mode: "production",
+        syncChrome: false
+    }), api(`/funnels/${slug}/split-test`, {
+        mode: "production",
+        syncChrome: false
+    }), state.coauthorConfigured ? coauthor(`/releases?funnel=${encodeURIComponent(slug)}`) : Promise.resolve({
+        ok: false,
+        error: "Release history is unavailable."
+    }) ]);
+    if (!routeResponseIsCurrent(request)) return;
+    if (!liveConfig.success) return view.replaceChildren(errorCard({
+        error: liveConfig.error || "The live funnel is unavailable."
+    }));
+    const c = liveConfig.config;
+    const releases = history.ok ? history.releases || [] : [];
+    const deploymentIdentity = deployedReleaseIdentity(releases);
+    const pages = splitState.success && Array.isArray(splitState.pages) ? splitState.pages : [];
+    const runningVersions = new Map();
+    pages.forEach(page => {
+        if (page.splitTest?.status === "running" && page.splitTest.versionNumber != null) runningVersions.set(Number(page.splitTest.versionNumber), page.label);
+    });
+    const pageLabel = key => pages.find(page => page.key === key)?.label || key;
+    const rateOf = metrics => {
+        const views = Number(metrics?.views) || 0;
+        const optins = Number(metrics?.optins) || 0;
+        return views > 0 ? `${(optins / views * 100).toFixed(1)}%` : "—";
+    };
+    const rows = releases.map(release => {
+        const current = deploymentIdentity.current?.id && release.id === deploymentIdentity.current.id;
+        const testing = runningVersions.has(Number(release.version));
+        const metrics = release.metrics || {};
+        return el("tr", {}, el("td", {
+            class: "mono"
+        }, `v${release.version ?? "?"}`), el("td", {}, el("div", {
+            class: "label"
+        }, releaseDisplayName(release)), el("div", {
+            class: "muted"
+        }, release.status === "split_test" ? "Split-test variation" : release.variation ? "Promoted winner" : "Release")), el("td", {}, release.page ? pageLabel(release.page) : "All pages"), el("td", {}, current ? el("span", {
+            class: "pill live"
+        }, "Current live") : testing ? el("span", {
+            class: "pill draft"
+        }, "In split test") : el("span", {
+            class: "muted"
+        }, "Previous")), el("td", {
+            class: "mono"
+        }, (Number(metrics.views) || 0).toLocaleString()), el("td", {
+            class: "mono"
+        }, (Number(metrics.optins) || 0).toLocaleString()), el("td", {
+            class: "mono"
+        }, rateOf(metrics)), el("td", {
+            class: "muted"
+        }, release.committedAt ? when(release.committedAt) : "—"), el("td", {}, el("a", {
+            class: "act",
+            href: `/preview/version/${slug}/${release.version}`,
+            target: "_blank",
+            rel: "noopener"
+        }, "Open ↗")));
+    });
+    const head = el("tr", {}, ...[ "Version", "Name", "Page", "State", "Views", "Opt-ins", "Opt-in rate", "Created", "" ].map(label => el("th", {}, label)));
+    view.replaceChildren(el("div", {}, el("div", {
+        class: "card"
+    }, el("h2", {}, el("a", {
+        href: `#/funnels/${slug}`
+    }, `← ${c.name || slug}`), "Performance", el("span", {
         class: "pill env"
     }, "Synthetic")), el("div", {
-        class: "stat-grid"
-    }, tile("Views", views.toLocaleString(), "Registration page loads"), tile("Opt-ins", optins.toLocaleString(), "Simulated form submissions"), tile("Opt-in rate", rate, views > 0 ? `${optins.toLocaleString()} of ${views.toLocaleString()} views` : "No views yet")));
+        class: "body muted"
+    }, "Every version of this funnel and the traffic it received while live. Split-test variations count the visitors their arm was shown to."), c.metrics ? statTiles(c.metrics) : null), el("div", {
+        class: "card"
+    }, el("h2", {}, "All versions"), rows.length ? el("div", {
+        class: "table-scroll"
+    }, el("table", {
+        class: "list"
+    }, el("thead", {}, head), el("tbody", {}, ...rows))) : el("div", {
+        class: history.ok ? "body muted" : "body err"
+    }, history.ok ? "No version records yet." : history.error))));
 }
 
 function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
