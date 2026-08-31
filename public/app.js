@@ -1989,7 +1989,7 @@ const SPLIT_THUMB_WIDTH = 264;
 
 const splitArmUrl = (canonicalUrl, arm) => `${canonicalUrl}${canonicalUrl.includes("?") ? "&" : "?"}split_force=${arm}`;
 
-function splitArmPanel({flag: flag, name: name, weightPill: weightPill, url: url, editHref: editHref, canEdit: canEdit, visits: visits}) {
+function splitArmPanel({flag: flag, name: name, weightPill: weightPill, url: url, editHref: editHref, canEdit: canEdit, visits: visits, pickWinner: pickWinner}) {
     return el("div", {
         class: "split-arm"
     }, el("span", {
@@ -2010,7 +2010,12 @@ function splitArmPanel({flag: flag, name: name, weightPill: weightPill, url: url
         target: "_blank",
         rel: "noopener",
         title: `Open the ${flag.toLowerCase()} page in its own tab.`
-    }, "Open ↗")), visits != null ? el("span", {
+    }, "Open ↗"), pickWinner ? el("button", {
+        class: "act",
+        type: "button",
+        title: "End the split test with this page as the live funnel.",
+        onclick: pickWinner
+    }, "🏆 Pick winner") : null), visits != null ? el("span", {
         class: "mono muted"
     }, `${visits} randomised visits`) : null);
 }
@@ -2050,6 +2055,20 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
     };
     const content = el("div", {});
     card.append(content, notice);
+    const history = Array.isArray(splitResponse.history) ? splitResponse.history : [];
+    if (history.length) card.append(el("div", {
+        class: "split-history"
+    }, el("span", {
+        class: "split-flag"
+    }, "Previous tests"), ...[ ...history ].reverse().map(entry => el("div", {
+        class: "split-history-row"
+    }, el("strong", {}, `Control vs ${entry.variation.name}`), el("span", {
+        class: `pill ${entry.outcome === "ended" ? "env" : "live"}`
+    }, entry.outcome === "variation" ? `Winner: ${entry.variation.name}` : entry.outcome === "control" ? "Winner: Control" : "No winner"), el("span", {
+        class: "muted"
+    }, `${when(entry.startedAt)} → ${when(entry.endedAt)}`), el("span", {
+        class: "mono muted"
+    }, `Final split ${entry.controlWeight}/${100 - entry.controlWeight} · ${entry.observed?.control ?? 0} control · ${entry.observed?.variation ?? 0} variation visits`)))));
     const controlPanel = (weightPill, visits) => splitArmPanel({
         flag: "Control",
         name: "Variation A",
@@ -2154,6 +2173,20 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
             }
             paintReadout();
         });
+        const pickWinner = (arm, armName) => async () => {
+            const message = arm === "control" ? "Keep Control (Variation A) as the live funnel? This ends the split test and all traffic returns to it." : `Make ${armName} the live funnel? This ends the split test and sends all traffic to it.`;
+            if (!confirm(message)) return;
+            const picked = await api(`/funnels/${slug}/split-test/winner`, {
+                mode: "production",
+                method: "POST",
+                body: {
+                    winner: arm
+                },
+                syncChrome: false
+            });
+            if (picked.success) return route();
+            say(picked.error || "The winner could not be saved.", true);
+        };
         const middleButton = el("button", {
             class: "act split-end",
             type: "button",
@@ -2177,7 +2210,16 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
         }, pending ? "Discard variation" : "End split test");
         content.replaceChildren(el("div", {
             class: "split-grid"
-        }, controlPanel(controlWeightPill, split.observed?.control), el("div", {
+        }, splitArmPanel({
+            flag: "Control",
+            name: "Variation A",
+            weightPill: controlWeightPill,
+            url: splitArmUrl(canonicalUrl, "control"),
+            editHref: `#/funnels/${slug}/build`,
+            canEdit: canEdit,
+            visits: split.observed?.control,
+            pickWinner: pending ? null : pickWinner("control", "Variation A")
+        }), el("div", {
             class: "split-middle"
         }, el("span", {
             class: "split-flag"
@@ -2190,7 +2232,8 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
             url: splitArmUrl(canonicalUrl, "variation"),
             editHref: `#/funnels/${slug}/build/variation`,
             canEdit: canEdit,
-            visits: split.observed?.variation
+            visits: split.observed?.variation,
+            pickWinner: pending ? null : pickWinner("variation", split.variation.name)
         })), el("div", {
             class: "split-save"
         }, saveButton));

@@ -35,6 +35,16 @@ const withSeededSplitTest = (funnels) => funnels.map((funnel) => funnel.slug !==
     variation: { key: 'variation-b', name: 'Variation B', createdAt: iso(3) },
     observed: { control: 534, variation: 229 },
   },
+  splitTestHistory: [
+    {
+      variation: { key: 'variation-a1', name: 'Shorter Form', duplicateOfControl: false },
+      controlWeight: 50,
+      observed: { control: 812, variation: 794 },
+      startedAt: iso(34),
+      endedAt: iso(21),
+      outcome: 'control',
+    },
+  ],
 });
 
 export const sandboxState = {

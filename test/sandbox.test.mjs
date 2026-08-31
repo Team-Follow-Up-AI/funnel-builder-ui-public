@@ -164,6 +164,46 @@ test('runs split tests with weighted, sticky, and forced preview arms', async ()
   assert.match(after, /SYNTHETIC CURRENT VERSION/);
 });
 
+test('picks winners and records split-test history', async () => {
+  const before = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`).then((value) => value.json());
+  assert.equal(before.history.at(-1).outcome, 'ended', 'ending a split test must archive it to history');
+  const priorRuns = before.history.length;
+
+  await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Bolder Headline', controlWeight: 40 }),
+  });
+  const badWinner = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/winner`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ winner: 'both' }),
+  });
+  assert.equal(badWinner.status, 400);
+  const picked = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/winner`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ winner: 'control' }),
+  });
+  assert.equal(picked.status, 200);
+  const afterPick = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`).then((value) => value.json());
+  assert.equal(afterPick.splitTest, null, 'picking a winner ends the split test');
+  assert.equal(afterPick.history.length, priorRuns + 1);
+  assert.equal(afterPick.history.at(-1).outcome, 'control');
+  assert.equal(afterPick.history.at(-1).variation.name, 'Bolder Headline');
+  assert.equal(afterPick.history.at(-1).controlWeight, 40, 'archived tests keep their final split and observed visits');
+
+  const noRun = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/winner`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ winner: 'control' }),
+  });
+  assert.equal(noRun.status, 404);
+
+  const promoted = await fetch(`${origin}/api/marketing/funnels/home-value-workshop/split-test/winner`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ winner: 'variation' }),
+  });
+  assert.equal(promoted.status, 200);
+  const livePage = await fetch(`${origin}/preview/live/home-value-workshop`).then((value) => value.text());
+  assert.match(livePage, /SYNTHETIC CURRENT VERSION/, 'the promoted page is the live funnel, not a split arm');
+  assert.match(livePage, /A bolder promise for your next move/, 'the winning variation content is now live');
+  const seeded = await fetch(`${origin}/api/marketing/funnels/home-value-workshop/split-test`).then((value) => value.json());
+  assert.equal(seeded.history.at(-1).outcome, 'variation');
+  assert.equal(seeded.history[0].outcome, 'control', 'the seeded prior test stays in history');
+});
+
 test('presentation source retains upstream builder logic and sandbox rails', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(app, /function renderFunnels/);

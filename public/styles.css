@@ -517,6 +517,9 @@ iframe.preview { display: block; border: none; background: #fff; overflow: auto;
 .split-save { display: flex; justify-content: center; padding: 0 14px 14px; }
 .split-save button:disabled { opacity: .45; cursor: default; }
 .split-notice { border-top: 1px solid var(--border); }
+.split-history { border-top: 1px solid var(--border); padding: 12px 14px; display: grid; gap: 8px; }
+.split-history-row { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
+.split-history-row strong { font-size: 13px; }
 @media (max-width: 860px) {
   .split-grid { grid-template-columns: 1fr; justify-items: center; }
   .split-arm { justify-items: center; }
