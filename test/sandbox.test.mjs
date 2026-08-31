@@ -111,6 +111,48 @@ test('fails closed for unknown API, page, Host, and WebSocket routes', async () 
   assert.match(socketReply, /^HTTP\/1\.1 403 Forbidden/);
 });
 
+test('runs split tests with weighted, sticky, and forced preview arms', async () => {
+  const seeded = await fetch(`${origin}/api/marketing/funnels/home-value-workshop/split-test`).then((value) => value.json());
+  assert.equal(seeded.splitTest.status, 'running');
+  assert.equal(seeded.splitTest.controlWeight, 70);
+
+  const created = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Variation B' }),
+  });
+  assert.equal(created.status, 201);
+  assert.equal((await created.json()).splitTest.controlWeight, 50);
+
+  const duplicate = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, { method: 'POST' });
+  assert.equal(duplicate.status, 409);
+  const badWeight = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ controlWeight: 140 }),
+  });
+  assert.equal(badWeight.status, 400);
+
+  await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ controlWeight: 0 }),
+  });
+  const randomised = await fetch(`${origin}/preview/live/summer-roofing-guide`);
+  assert.match(await randomised.text(), /SYNTHETIC SPLIT-TEST ARM/, 'weight 0 must send every new visitor to the variation');
+  assert.match(randomised.headers.get('set-cookie'), /demo_split_summer-roofing-guide=variation/);
+  const forcedControl = await fetch(`${origin}/preview/live/summer-roofing-guide?split_force=control`);
+  assert.match(await forcedControl.text(), /SYNTHETIC CURRENT VERSION/, 'forced console previews must override randomisation');
+  assert.equal(forcedControl.headers.get('set-cookie'), null, 'forced previews must not pin an arm');
+
+  await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ controlWeight: 100 }),
+  });
+  const pinned = await fetch(`${origin}/preview/live/summer-roofing-guide`, {
+    headers: { Cookie: 'demo_split_summer-roofing-guide=variation' },
+  }).then((value) => value.text());
+  assert.match(pinned, /SYNTHETIC SPLIT-TEST ARM/, 'returning visitors must keep their first arm');
+
+  const ended = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, { method: 'DELETE' });
+  assert.equal((await ended.json()).splitTest, null);
+  const after = await fetch(`${origin}/preview/live/summer-roofing-guide`).then((value) => value.text());
+  assert.match(after, /SYNTHETIC CURRENT VERSION/);
+});
+
 test('presentation source retains upstream builder logic and sandbox rails', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(app, /function renderFunnels/);

@@ -27,8 +27,18 @@ const baseFunnels = [
   },
 ];
 
+const withSeededSplitTest = (funnels) => funnels.map((funnel) => funnel.slug !== 'home-value-workshop' ? funnel : {
+  ...funnel,
+  splitTest: {
+    status: 'running',
+    controlWeight: 70,
+    variation: { key: 'variation-b', name: 'Variation B', createdAt: iso(3) },
+    observed: { control: 534, variation: 229 },
+  },
+});
+
 export const sandboxState = {
-  production: structuredClone(baseFunnels),
+  production: withSeededSplitTest(structuredClone(baseFunnels)),
   test: structuredClone([
     ...baseFunnels,
     {

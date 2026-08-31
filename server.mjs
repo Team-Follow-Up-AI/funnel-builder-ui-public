@@ -26,8 +26,8 @@ const json = (res, status, body, extra = {}) => {
   res.end(JSON.stringify(body));
 };
 
-const html = (res, status, body) => {
-  res.writeHead(status, { ...securityHeaders, 'Content-Type': 'text/html; charset=utf-8' });
+const html = (res, status, body, extra = {}) => {
+  res.writeHead(status, { ...securityHeaders, 'Content-Type': 'text/html; charset=utf-8', ...extra });
   res.end(body);
 };
 
@@ -54,14 +54,24 @@ const requestedMode = (req) => req.headers['x-demo-mode'] === 'production' ? 'pr
 
 const findFunnel = (slug, mode) => sandboxState[mode].find((item) => item.slug === slug);
 
-const previewDocument = (slug, kind) => `<!doctype html>
+const previewDocument = (slug, kind, variation = null) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${slug} synthetic preview</title><link rel="stylesheet" href="/preview.css"></head>
-<body><main class="preview-page"><span class="preview-kicker">${kind === 'live' ? 'SYNTHETIC CURRENT VERSION' : 'SYNTHETIC EDITABLE DRAFT'}</span>
-<h1>A clearer path to your next move</h1><p>See the practical steps homeowners can use to plan with confidence.</p>
+<body><main class="preview-page${variation ? ' variation' : ''}"><span class="preview-kicker">${variation ? `SYNTHETIC SPLIT-TEST ARM - ${variation.name.toUpperCase()}` : kind === 'live' ? 'SYNTHETIC CURRENT VERSION' : 'SYNTHETIC EDITABLE DRAFT'}</span>
+<h1>${variation ? 'A bolder promise for your next move' : 'A clearer path to your next move'}</h1><p>${variation ? 'This is the alternative page served to part of the randomised traffic in this split test.' : 'See the practical steps homeowners can use to plan with confidence.'}</p>
 <form action="/blocked-submission" method="post"><label>Name <input name="name" value="Sample Visitor" disabled></label>
 <label>Phone <input name="phone" value="+1 555 010 0200" disabled></label><button disabled>Submission disabled</button></form>
-<small>Fixture: ${slug}. This page is generated locally and cannot submit, track, or navigate externally.</small></main></body></html>`;
+<small>Fixture: ${slug}${variation ? ` (${variation.key})` : ''}. This page is generated locally and cannot submit, track, or navigate externally.</small></main></body></html>`;
+
+/** Weighted, sticky arm assignment for a running split test. Forced arms (the
+ * console's side-by-side previews) never count as visits or set the cookie. */
+const splitArmFor = (req, url, slug, split) => {
+  const forced = url.searchParams.get('split_force');
+  if (forced === 'control' || forced === 'variation') return { arm: forced, forced: true };
+  const sticky = String(req.headers.cookie || '').match(new RegExp(`(?:^|;\\s*)demo_split_${slug}=(control|variation)(?:;|$)`));
+  if (sticky) return { arm: sticky[1], forced: false, sticky: true };
+  return { arm: Math.random() * 100 < split.controlWeight ? 'control' : 'variation', forced: false, sticky: false };
+};
 
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 const staticFiles = new Set(['/index.html', '/app.js', '/styles.css']);
@@ -157,6 +167,47 @@ export const createSandboxServer = () => {
       });
     }
 
+    // Split tests target randomised live traffic, so they always act on the
+    // production fixture record; state is in-memory and clearly simulated.
+    const splitMatch = path.match(/^\/funnels\/([a-z0-9-]+)\/split-test$/);
+    if (splitMatch) {
+      const funnel = findFunnel(splitMatch[1], 'production');
+      if (!funnel) return reply(404, { success: false, error: 'Synthetic funnel not found.' });
+      if (req.method === 'GET') {
+        return reply(200, { success: true, splitTest: funnel.splitTest ? structuredClone(funnel.splitTest) : null });
+      }
+      if (req.method === 'POST') {
+        if (funnel.splitTest) return reply(409, { success: false, error: 'A split test already exists for this synthetic funnel.' });
+        let value;
+        try { value = await bodyJson(req); } catch (error) { return reply(400, { success: false, error: error.message }); }
+        const name = String(value.name || 'Variation B').replace(/[^\w .-]/g, '').trim().slice(0, 60) || 'Variation B';
+        funnel.splitTest = {
+          status: 'running',
+          controlWeight: 50,
+          variation: { key: 'variation-b', name, createdAt: new Date().toISOString() },
+          observed: { control: 0, variation: 0 },
+        };
+        return reply(201, { success: true, simulated: true, splitTest: structuredClone(funnel.splitTest) });
+      }
+      if (req.method === 'PUT') {
+        if (!funnel.splitTest) return reply(404, { success: false, error: 'No split test is running for this synthetic funnel.' });
+        let value;
+        try { value = await bodyJson(req); } catch (error) { return reply(400, { success: false, error: error.message }); }
+        const weight = Number(value.controlWeight);
+        if (!Number.isInteger(weight) || weight < 0 || weight > 100) {
+          return reply(400, { success: false, error: 'controlWeight must be an integer between 0 and 100.' });
+        }
+        funnel.splitTest.controlWeight = weight;
+        return reply(200, { success: true, simulated: true, splitTest: structuredClone(funnel.splitTest) });
+      }
+      if (req.method === 'DELETE') {
+        if (!funnel.splitTest) return reply(404, { success: false, error: 'No split test is running for this synthetic funnel.' });
+        funnel.splitTest = null;
+        return reply(200, { success: true, simulated: true, splitTest: null });
+      }
+      return reply(405, { success: false, error: 'Unsupported split-test method.' });
+    }
+
     const stateMatch = path.match(/^\/funnels\/([a-z0-9-]+)\/(go-live|pause)$/);
     if (stateMatch && req.method === 'POST' && mode === 'test') {
       const funnel = findFunnel(stateMatch[1], mode);
@@ -197,9 +248,18 @@ export const createSandboxServer = () => {
   }
 
   const preview = url.pathname.match(/^\/preview\/(test|live)\/([a-z0-9-]+)(?:\/.*)?$/);
-  if (req.method === 'GET' && preview) return html(res, 200, previewDocument(preview[2], preview[1]));
+  if (req.method === 'GET' && preview) {
+    const [, kind, slug] = preview;
+    const split = kind === 'live' ? findFunnel(slug, 'production')?.splitTest : null;
+    if (!split || split.status !== 'running') return html(res, 200, previewDocument(slug, kind));
+    const assignment = splitArmFor(req, url, slug, split);
+    if (!assignment.forced) split.observed[assignment.arm] += 1;
+    const extra = assignment.forced || assignment.sticky
+      ? {} : { 'Set-Cookie': `demo_split_${slug}=${assignment.arm}; Path=/; SameSite=Strict` };
+    return html(res, 200, previewDocument(slug, kind, assignment.arm === 'variation' ? split.variation : null), extra);
+  }
   if (req.method === 'GET' && url.pathname === '/preview.css') {
-    const css = '.preview-page{font-family:system-ui;max-width:720px;margin:12vh auto;padding:32px;color:#132238}.preview-kicker{color:#8b5a00;font-weight:700;font-size:12px}.preview-page h1{font-size:clamp(36px,7vw,72px);line-height:1}.preview-page form{display:grid;gap:14px;margin:32px 0;padding:24px;background:#edf3f8}.preview-page label{display:grid;gap:5px}.preview-page input,.preview-page button{padding:12px}';
+    const css = '.preview-page{font-family:system-ui;max-width:720px;margin:12vh auto;padding:32px;color:#132238}.preview-kicker{color:#8b5a00;font-weight:700;font-size:12px}.preview-page h1{font-size:clamp(36px,7vw,72px);line-height:1}.preview-page form{display:grid;gap:14px;margin:32px 0;padding:24px;background:#edf3f8}.preview-page label{display:grid;gap:5px}.preview-page input,.preview-page button{padding:12px}.preview-page.variation{background:#fff7ed}.preview-page.variation .preview-kicker{color:#b45309}.preview-page.variation form{background:#fde8cf}';
     res.writeHead(200, { ...securityHeaders, 'Content-Type': 'text/css; charset=utf-8' });
     return res.end(css);
   }

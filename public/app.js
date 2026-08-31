@@ -277,8 +277,8 @@ function route() {
     view.replaceChildren(el("p", {
         class: "muted"
     }, "Loading…"));
-    const build = hash.match(/^#\/funnels\/([a-z0-9-]+)\/build$/i);
-    if (build) return renderBuild(view, build[1], request);
+    const build = hash.match(/^#\/funnels\/([a-z0-9-]+)\/build(?:\/(variation))?$/i);
+    if (build) return renderBuild(view, build[1], request, build[2] ? "variation" : "control");
     const detail = hash.match(/^#\/funnels\/([a-z0-9-]+)/i);
     if (detail) return renderFunnel(view, detail[1], request);
     const hit = ROUTES.find(r => hash.startsWith(r.hash)) || ROUTES[0];
@@ -588,9 +588,9 @@ function mergeFunnelWorkspace(liveFunnels = [], testFunnels = [], {liveKnown: li
 
 const LIVE_THUMB_WIDTH = 148;
 
-function livePreviewThumb(canonicalUrl, slug) {
+function livePreviewThumb(canonicalUrl, slug, width = LIVE_THUMB_WIDTH) {
     const device = PREVIEW_DEVICES.desktop;
-    const scale = LIVE_THUMB_WIDTH / device.width;
+    const scale = width / device.width;
     const frame = el("iframe", {
         class: "preview",
         title: `Read-only live preview of ${slug}`,
@@ -1392,13 +1392,16 @@ function deliveryToggle(slug, c, mode = "test", deps = {}) {
 }
 
 async function renderFunnel(view, slug, request) {
-    const [liveConfig, testConfig, diagnosis, history, status] = await Promise.all([ api(`/funnels/${slug}/config`, {
+    const [liveConfig, testConfig, diagnosis, splitState, history, status] = await Promise.all([ api(`/funnels/${slug}/config`, {
         mode: "production",
         syncChrome: false
     }), api(`/funnels/${slug}/config`, {
         mode: "test",
         syncChrome: false
     }), api(`/funnels/${slug}/diagnosis`, {
+        mode: "production",
+        syncChrome: false
+    }), api(`/funnels/${slug}/split-test`, {
         mode: "production",
         syncChrome: false
     }), state.coauthorConfigured ? coauthor(`/releases?funnel=${encodeURIComponent(slug)}`) : Promise.resolve({
@@ -1498,6 +1501,7 @@ async function renderFunnel(view, slug, request) {
         }, `Latest release is incomplete. ${describeRelease(latestRelease).text}`));
     }
     if (published) wrap.append(readOnlyConfigCard(c));
+    if (published && productionUrl) wrap.append(splitTestCard(slug, productionUrl, splitState, testConfig.success));
     const releaseRows = releases.length ? releases.map(release => {
         const current = deploymentIdentity.current?.id && release.id === deploymentIdentity.current.id;
         const lastVerified = deploymentIdentity.state === "unverified" && deploymentIdentity.lastVerified?.id === release.id;
@@ -1981,89 +1985,186 @@ function promotionReviewDialog(binding, {funnelName: funnelName, onCommit: onCom
     };
 }
 
-function livePreviewSection(canonicalUrl) {
-    const frame = el("iframe", {
-        class: "preview",
-        title: "Read-only live preview",
-        scrolling: "yes",
-        loading: "lazy",
-        ...previewFrameAttributes(canonicalUrl)
-    });
-    const previewScaler = el("div", {
-        class: "preview-scaler"
-    }, frame);
-    const previewStage = el("div", {
-        class: "preview-stage"
-    }, previewScaler);
-    const previewCanvas = el("div", {
-        class: "preview-canvas live-preview-canvas"
-    }, previewStage);
-    const dimensions = el("span", {
-        class: "viewport-dimensions mono"
-    });
-    let activeDevice = "desktop";
-    const resizePreview = () => {
-        const geometry = previewGeometry(activeDevice, previewCanvas.clientWidth, previewCanvas.clientHeight);
-        frame.style.width = `${geometry.width}px`;
-        frame.style.height = `${geometry.height}px`;
-        previewScaler.style.width = `${geometry.width}px`;
-        previewScaler.style.height = `${geometry.height}px`;
-        previewScaler.style.transform = `scale(${geometry.scale})`;
-        previewStage.style.width = `${geometry.renderedWidth}px`;
-        previewStage.style.height = `${geometry.renderedHeight}px`;
-        dimensions.textContent = `${geometry.width} × ${geometry.height}`;
-    };
-    const deviceButtons = Object.values(PREVIEW_DEVICES).map(device => el("button", {
-        type: "button",
-        class: `tab device${activeDevice === device.key ? " on" : ""}`,
-        "aria-pressed": String(activeDevice === device.key),
-        title: `${device.label} CSS viewport: ${device.width} × ${device.height}`,
-        onclick: () => {
-            activeDevice = device.key;
-            for (const button of deviceButtons) {
-                const selected = button.dataset.device === activeDevice;
-                button.classList.toggle("on", selected);
-                button.setAttribute("aria-pressed", String(selected));
-            }
-            resizePreview();
-        },
-        "data-device": device.key
-    }, device.label));
-    if (typeof ResizeObserver !== "undefined") {
-        const observer = new ResizeObserver(() => {
-            if (!previewCanvas.isConnected) {
-                observer.disconnect();
-                return;
-            }
-            resizePreview();
-        });
-        observer.observe(previewCanvas);
-    } else {
-        const onResize = () => {
-            if (!previewCanvas.isConnected) {
-                window.removeEventListener("resize", onResize);
-                return;
-            }
-            resizePreview();
-        };
-        window.addEventListener("resize", onResize);
-    }
-    requestAnimationFrame(resizePreview);
+const SPLIT_THUMB_WIDTH = 264;
+
+const splitArmUrl = (canonicalUrl, arm) => `${canonicalUrl}${canonicalUrl.includes("?") ? "&" : "?"}split_force=${arm}`;
+
+function splitArmPanel({flag: flag, name: name, weightPill: weightPill, url: url, editHref: editHref, canEdit: canEdit, visits: visits}) {
     return el("div", {
-        class: "live-preview"
-    }, el("div", {
-        class: "live-preview-bar"
+        class: "split-arm"
     }, el("span", {
-        class: "label"
-    }, "Live preview"), el("span", {
+        class: "split-flag"
+    }, `⚑ ${flag}`, weightPill), name ? el("span", {
+        class: "muted"
+    }, name) : null, livePreviewThumb(url, `${flag} arm`, SPLIT_THUMB_WIDTH), el("div", {
+        class: "split-actions"
+    }, canEdit ? el("a", {
+        class: "act go",
+        href: editHref
+    }, "Edit") : el("span", {
+        class: "muted",
+        title: "No Test draft is available to edit."
+    }, "No draft"), el("a", {
+        class: "act",
+        href: url,
+        target: "_blank",
+        rel: "noopener",
+        title: `Open the ${flag.toLowerCase()} page in its own tab.`
+    }, "Open ↗")), visits != null ? el("span", {
+        class: "mono muted"
+    }, `${visits} randomised visits`) : null);
+}
+
+function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
+    const card = el("div", {
+        class: "card"
+    });
+    const running = splitResponse.success && splitResponse.splitTest && splitResponse.splitTest.status === "running";
+    card.append(el("h2", {}, "Split test", el("span", {
         class: "pill env"
-    }, "Synthetic"), el("span", {
-        class: "spacer"
-    }), el("span", {
-        class: "viewport-controls",
-        role: "group",
-        "aria-label": "Preview device"
-    }, ...deviceButtons, dimensions)), previewCanvas);
+    }, "Synthetic"), running ? el("span", {
+        class: "pill live"
+    }, "Running") : null));
+    if (!splitResponse.success) {
+        card.append(el("div", {
+            class: "body err"
+        }, `Split-test state is unavailable. ${splitResponse.error || "The Production API did not answer."}`));
+        return card;
+    }
+    const notice = el("div", {
+        class: "body muted split-notice",
+        role: "status",
+        "aria-live": "polite",
+        hidden: true
+    });
+    const say = (text, bad = false) => {
+        notice.hidden = !text;
+        notice.className = `body split-notice ${bad ? "err" : "muted"}`;
+        notice.textContent = text || "";
+    };
+    if (!running) {
+        card.append(el("div", {
+            class: "split-grid"
+        }, splitArmPanel({
+            flag: "Control",
+            weightPill: el("span", {
+                class: "pill env"
+            }, "100%"),
+            url: splitArmUrl(canonicalUrl, "control"),
+            editHref: `#/funnels/${slug}/build`,
+            canEdit: canEdit
+        }), el("div", {
+            class: "split-middle muted"
+        }, el("strong", {}, "Start split test"), el("span", {}, "Send part of the randomised live traffic to an alternative page.")), el("div", {
+            class: "split-create"
+        }, el("button", {
+            class: "act go",
+            type: "button",
+            onclick: async event => {
+                event.target.disabled = true;
+                const created = await api(`/funnels/${slug}/split-test`, {
+                    mode: "production",
+                    method: "POST",
+                    body: {
+                        name: "Variation B"
+                    },
+                    syncChrome: false
+                });
+                if (created.success) return route();
+                event.target.disabled = false;
+                say(created.error || "The variation could not be created.", true);
+            }
+        }, "＋ Create variation"))), notice);
+        return card;
+    }
+    const split = splitResponse.splitTest;
+    let controlWeight = split.controlWeight;
+    const readout = el("span", {
+        class: "mono"
+    });
+    const controlWeightPill = el("span", {
+        class: "pill env"
+    });
+    const variationWeightPill = el("span", {
+        class: "pill env"
+    });
+    const paintReadout = () => {
+        readout.textContent = `Control ${controlWeight}% · ${split.variation.name} ${100 - controlWeight}%`;
+        controlWeightPill.textContent = `${controlWeight}%`;
+        variationWeightPill.textContent = `${100 - controlWeight}%`;
+    };
+    paintReadout();
+    const slider = el("input", {
+        type: "range",
+        min: "0",
+        max: "100",
+        step: "5",
+        value: String(controlWeight),
+        "aria-label": "Percent of randomised traffic sent to the control page"
+    });
+    slider.addEventListener("input", () => {
+        controlWeight = Number(slider.value);
+        paintReadout();
+    });
+    slider.addEventListener("change", async () => {
+        const saved = await api(`/funnels/${slug}/split-test`, {
+            mode: "production",
+            method: "PUT",
+            body: {
+                controlWeight: Number(slider.value)
+            },
+            syncChrome: false
+        });
+        if (saved.success) {
+            controlWeight = saved.splitTest.controlWeight;
+            say(`Saved. New randomised visitors now split ${controlWeight}/${100 - controlWeight}.`);
+        } else {
+            slider.value = String(split.controlWeight);
+            controlWeight = split.controlWeight;
+            say(saved.error || "The traffic split could not be saved.", true);
+        }
+        paintReadout();
+    });
+    card.append(el("div", {
+        class: "split-grid"
+    }, splitArmPanel({
+        flag: "Control",
+        weightPill: controlWeightPill,
+        url: splitArmUrl(canonicalUrl, "control"),
+        editHref: `#/funnels/${slug}/build`,
+        canEdit: canEdit,
+        visits: split.observed?.control
+    }), el("div", {
+        class: "split-middle"
+    }, el("span", {
+        class: "split-flag"
+    }, "Traffic split"), slider, readout, el("span", {
+        class: "muted"
+    }, "Each new visitor is randomised to hold this split. Returning visitors keep the page they first saw."), el("button", {
+        class: "act split-end",
+        type: "button",
+        onclick: async event => {
+            if (!confirm("End this split test? All live traffic returns to the control page.")) return;
+            event.target.disabled = true;
+            const ended = await api(`/funnels/${slug}/split-test`, {
+                mode: "production",
+                method: "DELETE",
+                syncChrome: false
+            });
+            if (ended.success) return route();
+            event.target.disabled = false;
+            say(ended.error || "The split test could not be ended.", true);
+        }
+    }, "End split test")), splitArmPanel({
+        flag: "Variation",
+        name: split.variation.name,
+        weightPill: variationWeightPill,
+        url: splitArmUrl(canonicalUrl, "variation"),
+        editHref: `#/funnels/${slug}/build/variation`,
+        canEdit: canEdit,
+        visits: split.observed?.variation
+    })), notice);
+    return card;
 }
 
 function readOnlyConfigCard(config) {
@@ -2104,7 +2205,6 @@ function readOnlyConfigCard(config) {
     }, issue.detail)))) : [ el("div", {
         class: "body muted"
     }, "No configuration issues are reported.") ]);
-    if (summary.canonicalUrl) card.append(livePreviewSection(summary.canonicalUrl));
     return card;
 }
 
@@ -2186,7 +2286,7 @@ function coauthorMissingCard() {
     }, "Simulated chat is unavailable. Refresh the local sandbox and try again."));
 }
 
-async function renderBuild(view, slug, request) {
+async function renderBuild(view, slug, request, arm = "control") {
     const cfg = await api(`/funnels/${slug}/config`, {
         mode: "test",
         syncChrome: false
@@ -2918,7 +3018,10 @@ async function renderBuild(view, slug, request) {
         class: "builder-name"
     }, c.name || slug), el("span", {
         class: "muted mono builder-slug"
-    }, slug), el("span", {
+    }, slug), arm === "variation" ? el("span", {
+        class: "pill draft",
+        title: "You entered the builder from the split-test variation. In this sandbox both arms share the same Test draft."
+    }, "Editing: Variation") : null, el("span", {
         class: "spacer"
     }), el("span", {
         class: "pill env"
