@@ -116,11 +116,16 @@ test('runs split tests with weighted, sticky, and forced preview arms', async ()
   assert.equal(seeded.splitTest.status, 'running');
   assert.equal(seeded.splitTest.controlWeight, 70);
 
+  const badCreate = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Variation B', controlWeight: 140 }),
+  });
+  assert.equal(badCreate.status, 400, 'creating a variation with an invalid weight must fail before anything is stored');
+
   const created = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Variation B' }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Variation B', controlWeight: 65 }),
   });
   assert.equal(created.status, 201);
-  assert.equal((await created.json()).splitTest.controlWeight, 50);
+  assert.equal((await created.json()).splitTest.controlWeight, 65, 'the weight chosen before saving the variation must be stored');
 
   const dupArm = await fetch(`${origin}/preview/live/summer-roofing-guide?split_force=variation`).then((value) => value.text());
   assert.match(dupArm, /SYNTHETIC SPLIT-TEST ARM/);

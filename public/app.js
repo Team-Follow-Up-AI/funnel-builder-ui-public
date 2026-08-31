@@ -2019,12 +2019,18 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
     const card = el("div", {
         class: "card"
     });
-    const running = splitResponse.success && splitResponse.splitTest && splitResponse.splitTest.status === "running";
+    const statusPill = el("span", {
+        class: "pill",
+        style: "display:none"
+    });
+    const setStatus = (kind, text) => {
+        statusPill.style.display = text ? "" : "none";
+        statusPill.className = `pill ${kind}`;
+        statusPill.textContent = text;
+    };
     card.append(el("h2", {}, "Split test", el("span", {
         class: "pill env"
-    }, "Synthetic"), running ? el("span", {
-        class: "pill live"
-    }, "Running") : null));
+    }, "Synthetic"), statusPill));
     if (!splitResponse.success) {
         card.append(el("div", {
             class: "body err"
@@ -2042,141 +2048,155 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
         notice.className = `body split-notice ${bad ? "err" : "muted"}`;
         notice.textContent = text || "";
     };
-    if (!running) {
-        card.append(el("div", {
+    const content = el("div", {});
+    card.append(content, notice);
+    const controlPanel = (weightPill, visits) => splitArmPanel({
+        flag: "Control",
+        name: "Variation A",
+        weightPill: weightPill,
+        url: splitArmUrl(canonicalUrl, "control"),
+        editHref: `#/funnels/${slug}/build`,
+        canEdit: canEdit,
+        visits: visits
+    });
+    const renderEmpty = () => {
+        setStatus("", "");
+        content.replaceChildren(el("div", {
             class: "split-grid"
-        }, splitArmPanel({
-            flag: "Control",
-            name: "Variation A",
-            weightPill: el("span", {
-                class: "pill env"
-            }, "100%"),
-            url: splitArmUrl(canonicalUrl, "control"),
-            editHref: `#/funnels/${slug}/build`,
-            canEdit: canEdit
-        }), el("div", {
+        }, controlPanel(el("span", {
+            class: "pill env"
+        }, "100%")), el("div", {
             class: "split-middle muted"
         }, el("strong", {}, "Start split test"), el("span", {}, "Send part of the randomised live traffic to an alternative page.")), el("div", {
             class: "split-create"
         }, el("button", {
             class: "act go",
             type: "button",
-            onclick: async event => {
-                event.target.disabled = true;
-                const created = await api(`/funnels/${slug}/split-test`, {
-                    mode: "production",
-                    method: "POST",
-                    body: {
-                        name: "Variation B"
-                    },
-                    syncChrome: false
-                });
-                if (created.success) return route();
-                event.target.disabled = false;
-                say(created.error || "The variation could not be created.", true);
+            onclick: () => {
+                renderArms(null);
             }
-        }, "＋ Create variation"))), notice);
-        return card;
-    }
-    const split = splitResponse.splitTest;
-    let controlWeight = split.controlWeight;
-    const readout = el("span", {
-        class: "mono"
-    });
-    const controlWeightPill = el("span", {
-        class: "pill env"
-    });
-    const variationWeightPill = el("span", {
-        class: "pill env"
-    });
-    const paintReadout = () => {
-        readout.textContent = `Control ${controlWeight}% · ${split.variation.name} ${100 - controlWeight}%`;
-        controlWeightPill.textContent = `${controlWeight}%`;
-        variationWeightPill.textContent = `${100 - controlWeight}%`;
+        }, "＋ Create variation"))));
     };
-    paintReadout();
-    const slider = el("input", {
-        type: "range",
-        min: "0",
-        max: "100",
-        step: "5",
-        value: String(controlWeight),
-        "aria-label": "Percent of randomised traffic sent to the control page"
-    });
-    const saveButton = el("button", {
-        class: "act go",
-        type: "button",
-        disabled: true
-    }, "Save");
-    slider.addEventListener("input", () => {
-        controlWeight = Number(slider.value);
-        paintReadout();
-        const dirty = controlWeight !== split.controlWeight;
-        saveButton.disabled = !dirty;
-        say(dirty ? `Unsaved changes. Live traffic still splits ${split.controlWeight}/${100 - split.controlWeight} until you save.` : "");
-    });
-    saveButton.addEventListener("click", async () => {
-        saveButton.disabled = true;
-        const saved = await api(`/funnels/${slug}/split-test`, {
-            mode: "production",
-            method: "PUT",
-            body: {
-                controlWeight: Number(slider.value)
+    // renderArms draws the two-arm console. saved is the splitTest object the
+    // server already holds, or null for a variation that was just created in
+    // the UI: that one is a local duplicate of the control page and nothing is
+    // sent to the server until Save.
+    const renderArms = (saved) => {
+        const pending = !saved;
+        const split = saved || {
+            controlWeight: 50,
+            variation: {
+                key: "variation-b",
+                name: "Variation B",
+                duplicateOfControl: true
             },
-            syncChrome: false
+            observed: null
+        };
+        setStatus(pending ? "draft" : "live", pending ? "Unsaved" : "Running");
+        let controlWeight = split.controlWeight;
+        const readout = el("span", {
+            class: "mono"
         });
-        if (saved.success) {
-            split.controlWeight = saved.splitTest.controlWeight;
-            controlWeight = split.controlWeight;
-            say(`Saved. New randomised visitors now split ${controlWeight}/${100 - controlWeight}.`);
-        } else {
-            saveButton.disabled = false;
-            say(saved.error || "The traffic split could not be saved.", true);
-        }
+        const controlWeightPill = el("span", {
+            class: "pill env"
+        });
+        const variationWeightPill = el("span", {
+            class: "pill env"
+        });
+        const paintReadout = () => {
+            readout.textContent = `Control ${controlWeight}% · ${split.variation.name} ${100 - controlWeight}%`;
+            controlWeightPill.textContent = `${controlWeight}%`;
+            variationWeightPill.textContent = `${100 - controlWeight}%`;
+        };
         paintReadout();
-    });
-    card.append(el("div", {
-        class: "split-grid"
-    }, splitArmPanel({
-        flag: "Control",
-        name: "Variation A",
-        weightPill: controlWeightPill,
-        url: splitArmUrl(canonicalUrl, "control"),
-        editHref: `#/funnels/${slug}/build`,
-        canEdit: canEdit,
-        visits: split.observed?.control
-    }), el("div", {
-        class: "split-middle"
-    }, el("span", {
-        class: "split-flag"
-    }, "Traffic split"), slider, readout, el("span", {
-        class: "muted"
-    }, "Each new visitor is randomised to hold this split. Returning visitors keep the page they first saw."), el("button", {
-        class: "act split-end",
-        type: "button",
-        onclick: async event => {
-            if (!confirm("End this split test? All live traffic returns to the control page.")) return;
-            event.target.disabled = true;
-            const ended = await api(`/funnels/${slug}/split-test`, {
+        const slider = el("input", {
+            type: "range",
+            min: "0",
+            max: "100",
+            step: "5",
+            value: String(controlWeight),
+            "aria-label": "Percent of randomised traffic sent to the control page"
+        });
+        const saveButton = el("button", {
+            class: "act go",
+            type: "button",
+            disabled: !pending
+        }, pending ? "Save variation" : "Save");
+        slider.addEventListener("input", () => {
+            controlWeight = Number(slider.value);
+            paintReadout();
+            if (pending) return;
+            const dirty = controlWeight !== split.controlWeight;
+            saveButton.disabled = !dirty;
+            say(dirty ? `Unsaved changes. Live traffic still splits ${split.controlWeight}/${100 - split.controlWeight} until you save.` : "");
+        });
+        saveButton.addEventListener("click", async () => {
+            saveButton.disabled = true;
+            const saved2 = await api(`/funnels/${slug}/split-test`, {
                 mode: "production",
-                method: "DELETE",
+                method: pending ? "POST" : "PUT",
+                body: pending ? {
+                    name: split.variation.name,
+                    controlWeight: Number(slider.value)
+                } : {
+                    controlWeight: Number(slider.value)
+                },
                 syncChrome: false
             });
-            if (ended.success) return route();
-            event.target.disabled = false;
-            say(ended.error || "The split test could not be ended.", true);
-        }
-    }, "End split test")), splitArmPanel({
-        flag: "Variation",
-        name: split.variation.name,
-        weightPill: variationWeightPill,
-        url: splitArmUrl(canonicalUrl, "variation"),
-        editHref: `#/funnels/${slug}/build/variation`,
-        canEdit: canEdit,
-        visits: split.observed?.variation
-    })), el("div", {
-        class: "split-save"
-    }, saveButton), notice);
+            if (saved2.success) {
+                if (pending) return route();
+                split.controlWeight = saved2.splitTest.controlWeight;
+                controlWeight = split.controlWeight;
+                say(`Saved. New randomised visitors now split ${controlWeight}/${100 - controlWeight}.`);
+            } else {
+                saveButton.disabled = false;
+                say(saved2.error || (pending ? "The variation could not be saved." : "The traffic split could not be saved."), true);
+            }
+            paintReadout();
+        });
+        const middleButton = el("button", {
+            class: "act split-end",
+            type: "button",
+            onclick: async event => {
+                if (pending) {
+                    say("");
+                    renderEmpty();
+                    return;
+                }
+                if (!confirm("End this split test? All live traffic returns to the control page.")) return;
+                event.target.disabled = true;
+                const ended = await api(`/funnels/${slug}/split-test`, {
+                    mode: "production",
+                    method: "DELETE",
+                    syncChrome: false
+                });
+                if (ended.success) return route();
+                event.target.disabled = false;
+                say(ended.error || "The split test could not be ended.", true);
+            }
+        }, pending ? "Discard variation" : "End split test");
+        content.replaceChildren(el("div", {
+            class: "split-grid"
+        }, controlPanel(controlWeightPill, split.observed?.control), el("div", {
+            class: "split-middle"
+        }, el("span", {
+            class: "split-flag"
+        }, "Traffic split"), slider, readout, el("span", {
+            class: "muted"
+        }, "Each new visitor is randomised to hold this split. Returning visitors keep the page they first saw."), middleButton), splitArmPanel({
+            flag: "Variation",
+            name: split.variation.name,
+            weightPill: variationWeightPill,
+            url: splitArmUrl(canonicalUrl, "variation"),
+            editHref: `#/funnels/${slug}/build/variation`,
+            canEdit: canEdit,
+            visits: split.observed?.variation
+        })), el("div", {
+            class: "split-save"
+        }, saveButton));
+        say(pending ? "Unsaved variation. It duplicates the control page; live traffic stays 100% on control until you save." : "");
+    };
+    if (splitResponse.splitTest && splitResponse.splitTest.status === "running") renderArms(splitResponse.splitTest); else renderEmpty();
     return card;
 }
 

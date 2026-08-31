@@ -188,9 +188,13 @@ export const createSandboxServer = () => {
         let value;
         try { value = await bodyJson(req); } catch (error) { return reply(400, { success: false, error: error.message }); }
         const name = String(value.name || 'Variation B').replace(/[^\w .-]/g, '').trim().slice(0, 60) || 'Variation B';
+        const weight = value.controlWeight === undefined ? 50 : Number(value.controlWeight);
+        if (!Number.isInteger(weight) || weight < 0 || weight > 100) {
+          return reply(400, { success: false, error: 'controlWeight must be an integer between 0 and 100.' });
+        }
         funnel.splitTest = {
           status: 'running',
-          controlWeight: 50,
+          controlWeight: weight,
           variation: { key: 'variation-b', name, createdAt: new Date().toISOString(), duplicateOfControl: true },
           observed: { control: 0, variation: 0 },
         };
