@@ -54,13 +54,18 @@ const requestedMode = (req) => req.headers['x-demo-mode'] === 'production' ? 'pr
 
 const findFunnel = (slug, mode) => sandboxState[mode].find((item) => item.slug === slug);
 
-// Every split-test variation is its own funnel version. Base fixture releases
-// run v1-v3, so dynamic versions start at v4 and are stored per funnel.
-const pushRelease = (funnel, idPrefix, entry) => {
-  funnel.nextVersion = funnel.nextVersion || 4;
-  funnel.extraReleases = funnel.extraReleases || [];
-  const version = funnel.nextVersion++;
-  funnel.extraReleases.push({ id: `${idPrefix}-v${version}`, version, ...entry });
+// Versions are materialized per funnel (newest first) on first use, so they
+// can be renamed and extended. Every split-test variation and promoted winner
+// becomes its own funnel version after the v1-v3 base fixtures.
+const funnelReleases = (funnel, slug) => {
+  funnel.releases = funnel.releases || releasesFor(slug);
+  return funnel.releases;
+};
+
+const pushRelease = (funnel, slug, idPrefix, entry) => {
+  const releases = funnelReleases(funnel, slug);
+  const version = releases.reduce((max, item) => Math.max(max, Number(item.version) || 0), 0) + 1;
+  releases.unshift({ id: `${idPrefix}-v${version}`, version, ...entry });
 };
 
 // Every finished split test — ended or decided — is archived so the console
@@ -204,6 +209,20 @@ export const createSandboxServer = () => {
 
     // Split tests target randomised live traffic, so they always act on the
     // production fixture record; state is in-memory and clearly simulated.
+    const versionMatch = path.match(/^\/funnels\/([a-z0-9-]+)\/versions\/(\d{1,4})$/);
+    if (versionMatch) {
+      if (req.method !== 'PUT') return reply(405, { success: false, error: 'Unsupported version method.' });
+      const funnel = findFunnel(versionMatch[1], 'production');
+      if (!funnel) return reply(404, { success: false, error: 'Synthetic funnel not found.' });
+      const release = funnelReleases(funnel, versionMatch[1]).find((item) => Number(item.version) === Number(versionMatch[2]));
+      if (!release) return reply(404, { success: false, error: 'Synthetic version not found.' });
+      let value;
+      try { value = await bodyJson(req); } catch (error) { return reply(400, { success: false, error: error.message }); }
+      const name = String(value.name ?? '').replace(/[^\w .-]/g, '').trim().slice(0, 60);
+      if (name) release.name = name; else delete release.name;
+      return reply(200, { success: true, simulated: true, release: structuredClone(release) });
+    }
+
     const winnerMatch = path.match(/^\/funnels\/([a-z0-9-]+)\/split-test\/winner$/);
     if (winnerMatch) {
       if (req.method !== 'POST') return reply(405, { success: false, error: 'Unsupported split-test method.' });
@@ -218,10 +237,11 @@ export const createSandboxServer = () => {
       if (value.winner === 'variation') {
         const split = funnel.splitTest;
         funnel.promotedVariation = structuredClone(split.variation);
-        pushRelease(funnel, 'winner-b', {
+        pushRelease(funnel, winnerMatch[1], 'winner-b', {
           status: 'deployed_verified',
           committedAt: new Date().toISOString(),
           deploymentVerification: { verifiedAt: new Date().toISOString() },
+          variation: structuredClone(split.variation),
           note: `"${split.variation.name}" won the split test (${split.observed.variation} vs ${split.observed.control} randomised visits) and is now the live funnel.`,
         });
       }
@@ -255,9 +275,10 @@ export const createSandboxServer = () => {
           variation: { key: 'variation-b', name, createdAt: new Date().toISOString(), duplicateOfControl: true },
           observed: { control: 0, variation: 0 },
         };
-        pushRelease(funnel, 'split-test-b', {
+        pushRelease(funnel, splitMatch[1], 'split-test-b', {
           status: 'split_test',
           committedAt: funnel.splitTest.variation.createdAt,
+          variation: structuredClone(funnel.splitTest.variation),
           note: `Split-test variation "${name}" created as its own funnel version. It duplicates the control page and receives ${100 - weight}% of the randomised live traffic.`,
         });
         return reply(201, { success: true, simulated: true, splitTest: structuredClone(funnel.splitTest) });
@@ -307,8 +328,9 @@ export const createSandboxServer = () => {
   if (url.pathname.startsWith('/api/coauthor')) {
     if (req.method === 'GET' && url.pathname === '/api/coauthor/releases') {
       const slug = url.searchParams.get('funnel') || 'fixture';
-      const extras = structuredClone(findFunnel(slug, 'production')?.extraReleases || []).reverse();
-      return json(res, 200, { ok: true, releases: scenario === 'empty' ? [] : [...extras, ...releasesFor(slug)] });
+      const funnel = findFunnel(slug, 'production');
+      const releases = funnel ? funnelReleases(funnel, slug) : releasesFor(slug);
+      return json(res, 200, { ok: true, releases: scenario === 'empty' ? [] : structuredClone(releases) });
     }
     if (req.method === 'GET' && url.pathname === '/api/coauthor/status') {
       return json(res, 200, statusFor(url.searchParams.get('funnel') || 'fixture'));
@@ -320,6 +342,19 @@ export const createSandboxServer = () => {
       return json(res, 200, historyFor(url.searchParams.get('funnel') || 'fixture'));
     }
     return json(res, 403, { ok: false, error: 'Co-author mutation and release transports are disabled in this sandbox.' });
+  }
+
+  // Read-only snapshot of what a specific funnel version looked like: split
+  // arms for split_test versions, promoted content for winner versions, and
+  // the plain control page for base releases. Fails closed on unknown ids.
+  const versionPreview = url.pathname.match(/^\/preview\/version\/([a-z0-9-]+)\/(\d{1,4})$/);
+  if (req.method === 'GET' && versionPreview) {
+    const funnel = findFunnel(versionPreview[1], 'production');
+    if (!funnel) return json(res, 404, { success: false, error: 'Synthetic funnel not found.' });
+    const release = funnelReleases(funnel, versionPreview[1]).find((item) => Number(item.version) === Number(versionPreview[2]));
+    if (!release) return json(res, 404, { success: false, error: 'Synthetic version not found.' });
+    if (release.status === 'split_test') return html(res, 200, previewDocument(versionPreview[1], 'live', release.variation || null));
+    return html(res, 200, previewDocument(versionPreview[1], 'live', null, release.variation || null));
   }
 
   const preview = url.pathname.match(/^\/preview\/(test|live)\/([a-z0-9-]+)(?:\/.*)?$/);

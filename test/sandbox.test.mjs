@@ -220,6 +220,38 @@ test('records each split-test variation and promoted winner as a funnel version'
   assert.ok(home.releases.some((release) => release.id === 'split-test-b-v4'), 'the seeded running variation is version v4');
 });
 
+test('renames versions and serves read-only per-version previews', async () => {
+  const renamed = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/versions/3`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Summer Promo <script>' }),
+  });
+  assert.equal(renamed.status, 200);
+  assert.equal((await renamed.json()).release.name, 'Summer Promo script', 'names are sanitized like variation names');
+  const listed = await fetch(`${origin}/api/coauthor/releases?funnel=summer-roofing-guide`).then((value) => value.json());
+  assert.equal(listed.releases.find((release) => release.version === 3).name, 'Summer Promo script');
+  const cleared = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/versions/3`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '' }),
+  });
+  assert.equal((await cleared.json()).release.name, undefined, 'an empty name clears the custom name');
+  const missing = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/versions/99`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Ghost' }),
+  });
+  assert.equal(missing.status, 404);
+
+  const splitVersion = await fetch(`${origin}/preview/version/home-value-workshop/4`).then((value) => value.text());
+  assert.match(splitVersion, /SYNTHETIC SPLIT-TEST ARM/, 'split-test versions preview as their arm');
+  assert.match(splitVersion, /A bolder promise for your next move/, 'the seeded edited variation shows its own content');
+  const baseVersion = await fetch(`${origin}/preview/version/home-value-workshop/3`).then((value) => value.text());
+  assert.match(baseVersion, /SYNTHETIC CURRENT VERSION/);
+  assert.match(baseVersion, /A clearer path to your next move/, 'base releases preview the pre-promotion control page');
+  const winnerRelease = (await fetch(`${origin}/api/coauthor/releases?funnel=home-value-workshop`).then((value) => value.json()))
+    .releases.find((release) => release.id.startsWith('winner-b'));
+  const winnerVersion = await fetch(`${origin}/preview/version/home-value-workshop/${winnerRelease.version}`).then((value) => value.text());
+  assert.match(winnerVersion, /SYNTHETIC CURRENT VERSION/, 'a promoted winner previews as the live page');
+  assert.match(winnerVersion, /A bolder promise for your next move/);
+  const unknown = await fetch(`${origin}/preview/version/home-value-workshop/99`);
+  assert.equal(unknown.status, 404, 'unknown version previews fail closed');
+});
+
 test('presentation source retains upstream builder logic and sandbox rails', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(app, /function renderFunnels/);

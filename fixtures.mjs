@@ -27,6 +27,21 @@ const baseFunnels = [
   },
 ];
 
+const release = (slug, version, daysAgo, status = 'deployed_verified') => ({
+  id: `fixture-${slug}-v${version}`,
+  version,
+  status,
+  committedAt: iso(daysAgo),
+  deploymentVerification: { verifiedAt: iso(daysAgo) },
+  publicPageValues: { fixture_proof_count: version === 3 ? '7,104' : '6,980' },
+});
+
+export const releasesFor = (slug) => [
+  release(slug, 3, 2),
+  release(slug, 2, 18),
+  release(slug, 1, 42),
+];
+
 const withSeededSplitTest = (funnels) => funnels.map((funnel) => funnel.slug !== 'home-value-workshop' ? funnel : {
   ...funnel,
   splitTest: {
@@ -36,16 +51,18 @@ const withSeededSplitTest = (funnels) => funnels.map((funnel) => funnel.slug !==
     observed: { control: 534, variation: 229 },
   },
   // Every split-test variation is its own funnel version; base fixture
-  // releases end at v3, so the seeded running variation is v4.
-  nextVersion: 5,
-  extraReleases: [
+  // releases end at v3, so the seeded running variation is v4. The list is
+  // materialized (newest first) so versions can be renamed and extended.
+  releases: [
     {
       id: 'split-test-b-v4',
       version: 4,
       status: 'split_test',
       committedAt: iso(1),
       note: 'Split-test variation "Variation B" created as its own funnel version. It receives 30% of the randomised live traffic.',
+      variation: { key: 'variation-b', name: 'Variation B', createdAt: iso(1) },
     },
+    ...releasesFor('home-value-workshop'),
   ],
   splitTestHistory: [
     {
@@ -96,21 +113,6 @@ export const configFor = (funnel, mode) => ({
     { key: 'release', label: 'Release transport', ok: false, blocker: false, detail: 'Intentionally unavailable in the contributor sandbox.' },
   ],
 });
-
-const release = (slug, version, daysAgo, status = 'deployed_verified') => ({
-  id: `fixture-${slug}-v${version}`,
-  version,
-  status,
-  committedAt: iso(daysAgo),
-  deploymentVerification: { verifiedAt: iso(daysAgo) },
-  publicPageValues: { fixture_proof_count: version === 3 ? '7,104' : '6,980' },
-});
-
-export const releasesFor = (slug) => [
-  release(slug, 3, 2),
-  release(slug, 2, 18),
-  release(slug, 1, 42),
-];
 
 export const statusFor = (slug) => ({
   ok: true,

@@ -1502,28 +1502,7 @@ async function renderFunnel(view, slug, request) {
     }
     if (published) wrap.append(readOnlyConfigCard(c));
     if (published && productionUrl) wrap.append(splitTestCard(slug, productionUrl, splitState, testConfig.success));
-    const releaseRows = releases.length ? releases.map(release => {
-        const current = deploymentIdentity.current?.id && release.id === deploymentIdentity.current.id;
-        const lastVerified = deploymentIdentity.state === "unverified" && deploymentIdentity.lastVerified?.id === release.id;
-        const currentComplete = current && release.status === "deployed_verified";
-        return el("div", {
-            class: "row"
-        }, el("div", {
-            class: "grow"
-        }, el("div", {
-            class: "label"
-        }, `v${release.version ?? "?"} · ${String(release.id || "").slice(0, 12) || "unknown SHA"}`, current ? el("span", {
-            class: `pill ${currentComplete ? "live" : "blocker"}`
-        }, currentComplete ? "Current deployed" : "Current deployed, incomplete") : null, release.status === "split_test" ? el("span", {
-            class: "pill env"
-        }, "Split test") : null, lastVerified ? el("span", {
-            class: "pill"
-        }, "Last verified") : null), el("div", {
-            class: "headline"
-        }, describeRelease(release).text), el("div", {
-            class: "muted"
-        }, release.deploymentVerification?.verifiedAt ? `Verified ${utcWhen(release.deploymentVerification.verifiedAt)}` : release.committedAt ? `Committed ${when(release.committedAt)}` : "Time unavailable")));
-    }) : [ el("div", {
+    const releaseRows = releases.length ? releases.map(release => versionRow(slug, release, deploymentIdentity, splitState)) : [ el("div", {
         class: history.ok ? "body muted" : "body err"
     }, history.ok ? "No release records yet." : history.error) ];
     wrap.append(el("div", {
@@ -2243,6 +2222,96 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
     };
     if (splitResponse.splitTest && splitResponse.splitTest.status === "running") renderArms(splitResponse.splitTest); else renderEmpty();
     return card;
+}
+
+const VERSION_THUMB_WIDTH = 132;
+
+const VERSION_DETAIL_THUMB_WIDTH = 264;
+
+// One expandable row in the Versions card: the summary line carries the
+// version label (custom name first), status pills, and a live thumbnail of
+// that version's page; expanding it shows the full data for the version plus
+// a rename control.
+function versionRow(slug, release, deploymentIdentity, splitResponse) {
+    const current = deploymentIdentity.current?.id && release.id === deploymentIdentity.current.id;
+    const lastVerified = deploymentIdentity.state === "unverified" && deploymentIdentity.lastVerified?.id === release.id;
+    const currentComplete = current && release.status === "deployed_verified";
+    const versionUrl = `/preview/version/${slug}/${release.version}`;
+    const fallbackName = String(release.id || "").slice(0, 12) || "unknown SHA";
+    const displayName = release.name || fallbackName;
+    const matchedTest = (Array.isArray(splitResponse?.history) ? splitResponse.history : []).find(entry => entry.startedAt && entry.startedAt === release.committedAt) || null;
+    const pairs = [ [ "Version", `v${release.version ?? "?"}` ], [ "Name", release.name || "—" ], [ "Record id", release.id || "—" ], [ "Status", release.status || "—" ], [ "Type", release.status === "split_test" ? "Split-test variation" : release.variation ? "Promoted split-test winner" : "Release" ], release.variation ? [ "Variation", release.variation.name ] : null, release.variation ? [ "Page content", release.variation.duplicateOfControl ? "Duplicate of control" : "Edited page" ] : null, [ "Committed", release.committedAt ? when(release.committedAt) : "—" ], [ "Verified", release.deploymentVerification?.verifiedAt ? utcWhen(release.deploymentVerification.verifiedAt) : "Not verified" ], release.publicPageValues ? [ "Public page values", publicPageValuesSummary(release) ] : null, matchedTest ? [ "Test outcome", matchedTest.outcome === "variation" ? `Winner: ${matchedTest.variation.name}` : matchedTest.outcome === "control" ? "Winner: Control" : "Ended without a winner" ] : null, matchedTest ? [ "Test traffic", `Final split ${matchedTest.controlWeight}/${100 - matchedTest.controlWeight} · ${matchedTest.observed?.control ?? 0} control · ${matchedTest.observed?.variation ?? 0} variation visits` ] : null ].filter(Boolean);
+    const renameInput = el("input", {
+        type: "text",
+        class: "version-name-input",
+        value: release.name || "",
+        placeholder: fallbackName,
+        maxlength: "60",
+        "aria-label": `Name for version ${release.version}`
+    });
+    const renameButton = el("button", {
+        class: "act go",
+        type: "button"
+    }, "Rename");
+    const renameNote = el("span", {
+        class: "muted",
+        role: "status"
+    });
+    renameButton.addEventListener("click", async () => {
+        renameButton.disabled = true;
+        const saved = await api(`/funnels/${slug}/versions/${release.version}`, {
+            mode: "production",
+            method: "PUT",
+            body: {
+                name: renameInput.value
+            },
+            syncChrome: false
+        });
+        if (saved.success) return route();
+        renameButton.disabled = false;
+        renameNote.textContent = saved.error || "The version could not be renamed.";
+        renameNote.className = "err";
+    });
+    return el("details", {
+        class: "version-row"
+    }, el("summary", {}, el("div", {
+        class: "grow"
+    }, el("div", {
+        class: "label"
+    }, `v${release.version ?? "?"} · ${displayName}`, current ? el("span", {
+        class: `pill ${currentComplete ? "live" : "blocker"}`
+    }, currentComplete ? "Current deployed" : "Current deployed, incomplete") : null, release.status === "split_test" ? el("span", {
+        class: "pill env"
+    }, "Split test") : null, lastVerified ? el("span", {
+        class: "pill"
+    }, "Last verified") : null), el("div", {
+        class: "headline"
+    }, describeRelease(release).text), el("div", {
+        class: "muted"
+    }, release.deploymentVerification?.verifiedAt ? `Verified ${utcWhen(release.deploymentVerification.verifiedAt)}` : release.committedAt ? `Committed ${when(release.committedAt)}` : "Time unavailable")), livePreviewThumb(versionUrl, `version ${release.version} of ${slug}`, VERSION_THUMB_WIDTH), el("span", {
+        class: "version-caret",
+        "aria-hidden": "true"
+    }, "▸")), el("div", {
+        class: "version-detail"
+    }, el("div", {
+        class: "version-detail-preview"
+    }, livePreviewThumb(versionUrl, `version ${release.version} of ${slug}`, VERSION_DETAIL_THUMB_WIDTH), el("a", {
+        class: "act",
+        href: versionUrl,
+        target: "_blank",
+        rel: "noopener",
+        title: "Open this version's page in its own tab."
+    }, "Open ↗")), el("div", {
+        class: "version-detail-data"
+    }, el("div", {
+        class: "version-data-grid"
+    }, ...pairs.flatMap(([key, value]) => [ el("span", {
+        class: "muted"
+    }, key), el("span", {
+        class: "mono"
+    }, value) ])), el("div", {
+        class: "version-rename"
+    }, renameInput, renameButton, renameNote))));
 }
 
 function readOnlyConfigCard(config) {
