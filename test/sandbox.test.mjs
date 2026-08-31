@@ -321,10 +321,13 @@ test('runs scheduled split-test starts and variation launches', async () => {
   assert.equal((await post({ page: 'confirmation', action: 'explode', at: future })).status, 400);
   assert.equal((await post({ page: 'checkout', action: 'start_split', at: future })).status, 404);
   assert.equal((await post({ page: 'confirmation', action: 'start_split', at: new Date(Date.now() - 1000).toISOString() })).status, 400, 'past times are rejected');
+  assert.equal((await post({ page: 'confirmation', action: 'start_split', at: future, timeZone: 'Neverland/Nowhere' })).status, 400, 'invalid time zones are rejected');
 
-  const created = await post({ page: 'confirmation', action: 'start_split', at: new Date(Date.now() + 120).toISOString(), name: 'Night Owl', controlWeight: 60 });
+  const created = await post({ page: 'confirmation', action: 'start_split', at: new Date(Date.now() + 120).toISOString(), name: 'Night Owl', controlWeight: 60, timeZone: 'America/Chicago' });
   assert.equal(created.status, 201);
-  const scheduleId = (await created.json()).schedule.id;
+  const createdSchedule = (await created.json()).schedule;
+  assert.equal(createdSchedule.timeZone, 'America/Chicago', 'schedules remember the zone they were entered in');
+  const scheduleId = createdSchedule.id;
   await new Promise((resolve) => setTimeout(resolve, 200));
   const started = await fetch(`${origin}/api/marketing/funnels/home-value-workshop/split-test`).then((value) => value.json());
   const confirmationSplit = started.pages.find((page) => page.key === 'confirmation').splitTest;
@@ -342,7 +345,9 @@ test('runs scheduled split-test starts and variation launches', async () => {
   assert.equal(swapped.history.at(-1).variation.name, 'Night Owl');
 
   const cancellable = await post({ page: 'confirmation', action: 'start_split', at: new Date(Date.now() + 3_600_000).toISOString() });
-  const cancelId = (await cancellable.json()).schedule.id;
+  const cancellableSchedule = (await cancellable.json()).schedule;
+  assert.equal(cancellableSchedule.timeZone, 'America/New_York', 'schedules default to Eastern Time');
+  const cancelId = cancellableSchedule.id;
   const cancelled = await fetch(`${origin}/api/marketing/funnels/home-value-workshop/schedules/${cancelId}`, { method: 'DELETE' });
   assert.equal(cancelled.status, 200);
   assert.equal((await fetch(`${origin}/api/marketing/funnels/home-value-workshop/schedules/${cancelId}`, { method: 'DELETE' })).status, 404);

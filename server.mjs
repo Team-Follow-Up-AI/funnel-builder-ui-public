@@ -447,11 +447,21 @@ export const createSandboxServer = () => {
         if (!Number.isInteger(weight) || weight < 0 || weight > 100) {
           return reply(400, { success: false, error: 'controlWeight must be an integer between 0 and 100.' });
         }
+        // `at` stays the UTC instant the sweep fires on; `timeZone` records the
+        // IANA zone the schedule was entered in (Eastern by default) so every
+        // console shows it as the wall-clock time the scheduler meant.
+        const timeZone = value.timeZone === undefined ? 'America/New_York' : String(value.timeZone);
+        try {
+          new Intl.DateTimeFormat('en-US', { timeZone });
+        } catch {
+          return reply(400, { success: false, error: 'timeZone must be a valid IANA time zone (e.g. America/New_York).' });
+        }
         const schedule = {
           id: `sch-${scheduleSeq++}`,
           page: pageDef.key,
           action: value.action,
           at: new Date(due).toISOString(),
+          timeZone,
           name: String(value.name || 'Variation B').replace(/[^\w .-]/g, '').trim().slice(0, 60) || 'Variation B',
           controlWeight: weight,
           status: 'pending',

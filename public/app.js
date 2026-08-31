@@ -149,6 +149,70 @@ const el = (tag, attrs = {}, ...kids) => {
 
 const when = iso => iso ? new Date(iso).toLocaleString() : "-";
 
+// Every schedule carries the IANA time zone it was entered in (Eastern by
+// default) and is always shown in that zone with its abbreviation, so a
+// "9:00 AM ET" schedule never silently turns into the viewer's local time.
+const DEFAULT_SCHEDULE_ZONE = "America/New_York";
+
+const SCHEDULE_ZONES = [ {
+    id: "America/New_York",
+    label: "Eastern (ET)"
+}, {
+    id: "America/Chicago",
+    label: "Central (CT)"
+}, {
+    id: "America/Denver",
+    label: "Mountain (MT)"
+}, {
+    id: "America/Los_Angeles",
+    label: "Pacific (PT)"
+}, {
+    id: "Europe/London",
+    label: "UK (London)"
+} ];
+
+const whenInZone = (iso, timeZone) => {
+    if (!iso) return "-";
+    try {
+        return new Date(iso).toLocaleString("en-US", {
+            timeZone: timeZone || DEFAULT_SCHEDULE_ZONE,
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+            timeZoneName: "short"
+        });
+    } catch {
+        return new Date(iso).toLocaleString();
+    }
+};
+
+// "YYYY-MM-DDTHH:MM" wall clock of an instant in a zone (datetime-local shape).
+const wallClockInZone = (date, timeZone) => {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: timeZone,
+        hourCycle: "h23",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+    }).formatToParts(date);
+    const get = type => parts.find(part => part.type === type).value;
+    return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+};
+
+// The instant a "YYYY-MM-DDTHH:MM" wall clock names in a zone. Two passes so a
+// DST shift between the first guess and the answer still lands on the hour the
+// user picked.
+const instantFromWallClock = (value, timeZone) => {
+    const guess = Date.parse(`${value}:00Z`);
+    if (!Number.isFinite(guess)) return null;
+    const offsetAt = ts => Date.parse(`${wallClockInZone(new Date(ts), timeZone)}:00Z`) - ts;
+    return new Date(guess - offsetAt(guess - offsetAt(guess)));
+};
+
 const modeLine = mode => mode === "production" ? "Real view" : "Test mode";
 
 const MODE_KEY = "demo-console-mode";
@@ -2195,21 +2259,13 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
     const content = el("div", {});
     const describeSchedule = item => item.action === "start_split" ? `Start split test ("${item.name}")` : "Make the variation live";
     const pendingSchedules = schedules.filter(item => item.status === "pending").sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-    const scheduleHint = pendingSchedules.length ? ` · ⏱ ${describeSchedule(pendingSchedules[0])} ${when(pendingSchedules[0].at)}` : "";
-    const toLocalInputValue = date => {
-        const pad = value => String(value).padStart(2, "0");
-        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-    };
-    const tomorrowAt = hour => {
-        const date = new Date();
-        date.setDate(date.getDate() + 1);
-        date.setHours(hour, 0, 0, 0);
-        return date;
-    };
+    const scheduleHint = pendingSchedules.length ? ` · ⏱ ${describeSchedule(pendingSchedules[0])} ${whenInZone(pendingSchedules[0].at, pendingSchedules[0].timeZone)}` : "";
     // The schedule controls live directly under the variation panel, so they
     // only exist while a variation does: an unsaved variation can be
     // scheduled to start later instead of saving it now, and a running
-    // test's variation can be scheduled to become the live page.
+    // test's variation can be scheduled to become the live page. The picked
+    // date and time are wall clock in the selected zone (Eastern by default),
+    // not the viewer's local time.
     const buildScheduleBox = ({pending: pending, split: split, slider: slider}) => {
         const scheduleWhen = el("input", {
             type: "datetime-local",
@@ -2220,20 +2276,28 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
                 scheduleWhen.showPicker();
             } catch {}
         });
-        const presetChip = (label, dateFor) => el("button", {
+        const scheduleZone = el("select", {
+            "aria-label": `Time zone for the scheduled action on the ${page.label.toLowerCase()}`
+        }, SCHEDULE_ZONES.map(zone => el("option", {
+            value: zone.id
+        }, zone.label)));
+        scheduleZone.value = DEFAULT_SCHEDULE_ZONE;
+        const presetChip = (label, valueFor) => el("button", {
             class: "act",
             type: "button",
             onclick: () => {
-                scheduleWhen.value = toLocalInputValue(dateFor());
+                scheduleWhen.value = valueFor();
             }
         }, label);
+        const tomorrowAt = hour => `${wallClockInZone(new Date(Date.now() + 864e5), scheduleZone.value).slice(0, 10)}T${String(hour).padStart(2, "0")}:00`;
         const scheduleButton = el("button", {
             class: "act",
             type: "button"
         }, "⏱ Schedule");
         scheduleButton.addEventListener("click", async () => {
             if (!scheduleWhen.value) return say("Pick a date and time for the schedule first.", true);
-            const at = new Date(scheduleWhen.value);
+            const at = instantFromWallClock(scheduleWhen.value, scheduleZone.value);
+            if (!at) return say("Pick a date and time for the schedule first.", true);
             if (!(at.getTime() > Date.now())) return say("The scheduled time must be in the future.", true);
             scheduleButton.disabled = true;
             const created = await api(`/funnels/${slug}/schedules`, {
@@ -2243,12 +2307,14 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
                     page: page.key,
                     action: "start_split",
                     at: at.toISOString(),
+                    timeZone: scheduleZone.value,
                     name: split.variation.name,
                     controlWeight: Number(slider.value)
                 } : {
                     page: page.key,
                     action: "promote_variation",
-                    at: at.toISOString()
+                    at: at.toISOString(),
+                    timeZone: scheduleZone.value
                 },
                 syncChrome: false
             });
@@ -2264,11 +2330,11 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
             class: "muted"
         }, pending ? "Start this split test automatically at:" : `Make ${split.variation.name} the live page automatically at:`), el("div", {
             class: "split-schedule-form"
-        }, scheduleWhen, scheduleButton), el("div", {
+        }, scheduleWhen, scheduleZone, scheduleButton), el("div", {
             class: "split-schedule-presets"
         }, el("span", {
             class: "muted"
-        }, "Quick pick:"), presetChip("In 1 hour", () => new Date(Date.now() + 36e5)), presetChip("Tomorrow 06:00", () => tomorrowAt(6)), presetChip("Tomorrow 09:00", () => tomorrowAt(9)), presetChip("Tomorrow 21:00", () => tomorrowAt(21))));
+        }, "Quick pick:"), presetChip("In 1 hour", () => wallClockInZone(new Date(Date.now() + 36e5), scheduleZone.value)), presetChip("Tomorrow 06:00", () => tomorrowAt(6)), presetChip("Tomorrow 09:00", () => tomorrowAt(9)), presetChip("Tomorrow 21:00", () => tomorrowAt(21))));
     };
     const renderEmpty = () => {
         setStatus("", "");
@@ -2476,7 +2542,7 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
         class: "split-schedule-row"
     }, el("span", {
         class: "mono"
-    }, `⏱ ${when(item.at)}`), el("span", {}, describeSchedule(item)), item.status === "pending" ? el("button", {
+    }, `⏱ ${whenInZone(item.at, item.timeZone)}`), el("span", {}, describeSchedule(item)), item.status === "pending" ? el("button", {
         class: "act",
         type: "button",
         onclick: async event => {
