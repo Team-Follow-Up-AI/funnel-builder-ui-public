@@ -2272,7 +2272,7 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit) {
     if (page.splitTest && page.splitTest.status === "running") renderArms(page.splitTest); else renderEmpty();
     return el("details", {
         class: "page-split-row"
-    }, el("summary", {}, livePreviewThumb(base, page.label, PAGE_THUMB_WIDTH), el("div", {
+    }, el("summary", {}, livePreviewThumb(splitArmUrl(base, "control"), page.label, PAGE_THUMB_WIDTH), el("div", {
         class: "grow"
     }, el("div", {
         class: "label"
@@ -2362,7 +2362,7 @@ function versionRow(slug, release, deploymentIdentity, splitResponse) {
         title: "Open this version's page in its own tab."
     }, "Open ↗")), el("div", {
         class: "version-detail-data"
-    }, el("div", {
+    }, versionStats(release), el("div", {
         class: "version-data-grid"
     }, ...pairs.flatMap(([key, value]) => [ el("span", {
         class: "muted"
@@ -2371,6 +2371,26 @@ function versionRow(slug, release, deploymentIdentity, splitResponse) {
     }, value) ])), el("div", {
         class: "version-rename"
     }, renameInput, renameButton, renameNote))));
+}
+
+// Performance of one specific version: the views and opt-ins recorded while
+// that version was serving live traffic (as the deployed version, or as a
+// split-test arm).
+function versionStats(release) {
+    if (!release.metrics) return null;
+    const views = Number(release.metrics.views) || 0;
+    const optins = Number(release.metrics.optins) || 0;
+    const rate = views > 0 ? `${(optins / views * 100).toFixed(1)}%` : "—";
+    const tile = (label, value) => el("div", {
+        class: "stat-tile"
+    }, el("span", {
+        class: "stat-label"
+    }, label), el("span", {
+        class: "stat-value"
+    }, value));
+    return el("div", {
+        class: "stat-grid version-stats"
+    }, tile("Views", views.toLocaleString()), tile("Opt-ins", optins.toLocaleString()), tile("Opt-in rate", rate));
 }
 
 function readOnlyConfigCard(config) {

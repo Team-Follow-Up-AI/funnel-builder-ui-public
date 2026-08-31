@@ -44,6 +44,7 @@ const release = (slug, version, daysAgo, status = 'deployed_verified') => ({
   committedAt: iso(daysAgo),
   deploymentVerification: { verifiedAt: iso(daysAgo) },
   publicPageValues: { fixture_proof_count: version === 3 ? '7,104' : '6,980' },
+  metrics: version === 3 ? { views: 5104, optins: 638 } : version === 2 ? { views: 4406, optins: 401 } : { views: 3330, optins: 93 },
 });
 
 export const releasesFor = (slug) => [
@@ -62,6 +63,7 @@ const withSeededSplitTest = (funnels) => funnels.map((funnel) => funnel.slug !==
       variation: { key: 'variation-b', name: 'Variation B', createdAt: iso(1) },
       observed: { control: 534, variation: 229 },
       optins: { control: 41, variation: 29 },
+      versionNumber: 4,
     },
   },
   // Every split-test variation is its own funnel version; base fixture
@@ -76,6 +78,7 @@ const withSeededSplitTest = (funnels) => funnels.map((funnel) => funnel.slug !==
       page: 'registration',
       note: 'Split-test variation "Variation B" created as its own funnel version on the Registration page. It receives 30% of the randomised live traffic.',
       variation: { key: 'variation-b', name: 'Variation B', createdAt: iso(1) },
+      metrics: { views: 229, optins: 29 },
     },
     ...releasesFor('home-value-workshop'),
   ],

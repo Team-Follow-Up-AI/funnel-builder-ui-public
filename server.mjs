@@ -65,7 +65,8 @@ const funnelReleases = (funnel, slug) => {
 const pushRelease = (funnel, slug, idPrefix, entry) => {
   const releases = funnelReleases(funnel, slug);
   const version = releases.reduce((max, item) => Math.max(max, Number(item.version) || 0), 0) + 1;
-  releases.unshift({ id: `${idPrefix}-v${version}`, version, ...entry });
+  releases.unshift({ id: `${idPrefix}-v${version}`, version, metrics: { views: 0, optins: 0 }, ...entry });
+  return version;
 };
 
 // Every finished split test — ended or decided — is archived so the console
@@ -131,20 +132,36 @@ const splitArmFor = (req, url, slug, pageKey, split) => {
   return { arm: Math.random() * 100 < split.controlWeight ? 'control' : 'variation', forced: false, sticky: false };
 };
 
-// Synthetic funnel analytics: registration-page loads count as views, and a
-// fixed share of them simulate an opt-in (the sandbox's forms are inert, so
-// submissions cannot happen for real). Console thumbnails (?console=1) and
-// forced split arms never count.
+// Synthetic funnel analytics: registration-page loads count as funnel views,
+// and a fixed share of them simulate an opt-in (the sandbox's forms are
+// inert, so submissions cannot happen for real). Every live page load is
+// also credited to the funnel version that served it: the variation's own
+// version while its split test runs, the current deployed version otherwise.
+// Console thumbnails (?console=1) and forced split arms never count.
 const SYNTHETIC_OPTIN_RATE = 0.09;
 
-const countLiveView = (funnel, url, pageDef, split = null, arm = null) => {
-  if (!funnel || pageDef.key !== 'registration') return;
-  if (url.searchParams.has('console') || url.searchParams.has('split_force')) return;
+const creditedRelease = (funnel, slug, split, arm) => {
+  const releases = funnelReleases(funnel, slug);
+  if (split && arm === 'variation' && split.versionNumber != null) {
+    return releases.find((item) => Number(item.version) === Number(split.versionNumber)) || null;
+  }
+  return releases.find((item) => item.status === 'deployed_verified') || null;
+};
+
+const countLiveView = (funnel, slug, url, pageDef, split = null, arm = null) => {
+  if (!funnel || url.searchParams.has('console') || url.searchParams.has('split_force')) return;
+  const release = creditedRelease(funnel, slug, split, arm);
+  if (release) {
+    release.metrics = release.metrics || { views: 0, optins: 0 };
+    release.metrics.views += 1;
+  }
+  if (pageDef.key !== 'registration') return;
   funnel.metrics = funnel.metrics || { views: 0, optins: 0 };
   funnel.metrics.views += 1;
   if (Math.random() < SYNTHETIC_OPTIN_RATE) {
     funnel.metrics.optins += 1;
     if (split?.optins && arm) split.optins[arm] += 1;
+    if (release) release.metrics.optins += 1;
   }
 };
 
@@ -311,7 +328,7 @@ export const createSandboxServer = () => {
           observed: { control: 0, variation: 0 },
           optins: { control: 0, variation: 0 },
         };
-        pushRelease(funnel, splitPageMatch[1], 'split-test-b', {
+        funnel.splitTests[pageDef.key].versionNumber = pushRelease(funnel, splitPageMatch[1], 'split-test-b', {
           status: 'split_test',
           committedAt: funnel.splitTests[pageDef.key].variation.createdAt,
           page: pageDef.key,
@@ -421,13 +438,14 @@ export const createSandboxServer = () => {
     const promoted = funnel?.promotedVariations?.[pageDef.key] || null;
     const split = funnel?.splitTests?.[pageDef.key];
     if (!split || split.status !== 'running') {
-      countLiveView(funnel, url, pageDef);
+      countLiveView(funnel, slug, url, pageDef);
       return html(res, 200, previewDocument(slug, kind, { page: pageDef, promoted }));
     }
+    const consoleHit = url.searchParams.has('console');
     const assignment = splitArmFor(req, url, slug, pageDef.key, split);
-    if (!assignment.forced) split.observed[assignment.arm] += 1;
-    countLiveView(funnel, url, pageDef, split, assignment.arm);
-    const extra = assignment.forced || assignment.sticky
+    if (!assignment.forced && !consoleHit) split.observed[assignment.arm] += 1;
+    countLiveView(funnel, slug, url, pageDef, split, assignment.arm);
+    const extra = assignment.forced || assignment.sticky || consoleHit
       ? {} : { 'Set-Cookie': `demo_split_${slug}_${pageDef.key}=${assignment.arm}; Path=/; SameSite=Strict` };
     return html(res, 200, previewDocument(slug, kind, { page: pageDef, variation: assignment.arm === 'variation' ? split.variation : null, promoted }), extra);
   }

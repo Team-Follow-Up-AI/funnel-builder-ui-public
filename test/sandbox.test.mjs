@@ -279,25 +279,36 @@ test('splits pages independently and tracks synthetic views and opt-ins', async 
   assert.match(confirmation, /You are registered/, 'the confirmation page renders its own content');
   assert.equal((await fetch(`${origin}/preview/live/summer-roofing-guide/unknown-page/`)).status, 404, 'unknown pages fail closed');
 
+  const readMetrics = async () => (await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/config`, {
+    headers: { 'X-Demo-Mode': 'production' },
+  }).then((value) => value.json())).config.metrics;
+  const readReleases = async () => (await fetch(`${origin}/api/coauthor/releases?funnel=summer-roofing-guide`).then((value) => value.json())).releases;
+  const deployedViews = (releases) => releases.find((release) => release.status === 'deployed_verified').metrics.views;
+  const metricsBefore = await readMetrics();
+  const deployedBefore = deployedViews(await readReleases());
+  for (let i = 0; i < 10; i += 1) await fetch(`${origin}/preview/live/summer-roofing-guide`);
+  await fetch(`${origin}/preview/live/summer-roofing-guide?console=1`);
+  await fetch(`${origin}/preview/live/summer-roofing-guide/thank-you/`);
+  const metricsAfter = await readMetrics();
+  assert.equal(metricsAfter.views, metricsBefore.views + 10, 'registration loads count as funnel views; console thumbnails and confirmation loads do not');
+  assert.ok(metricsAfter.optins >= metricsBefore.optins && metricsAfter.optins <= metricsBefore.optins + 10, 'a share of counted views simulate opt-ins');
+  assert.equal(deployedViews(await readReleases()), deployedBefore + 11, 'the deployed version is credited with every live page load it served');
+
+  const homeReleases = (await fetch(`${origin}/api/coauthor/releases?funnel=home-value-workshop`).then((value) => value.json())).releases;
+  const seededVariation = homeReleases.find((release) => release.id === 'split-test-b-v4');
+  assert.equal(seededVariation.metrics.views, 229, 'a split-test version carries the performance of its variation arm');
+  assert.equal(seededVariation.metrics.optins, 29);
+
   const created = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/confirmation`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Warmer Thanks' }),
   });
   assert.equal(created.status, 201);
-  assert.equal((await created.json()).splitTest.optins.control, 0, 'new tests start their opt-in counters at zero');
+  const createdBody = await created.json();
+  assert.equal(createdBody.splitTest.optins.control, 0, 'new tests start their opt-in counters at zero');
+  assert.ok(Number(createdBody.splitTest.versionNumber) > 3, 'a new test remembers which version its variation became');
   const badPage = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/checkout`, { method: 'POST' });
   assert.equal(badPage.status, 404, 'unknown pages fail closed for split tests too');
   const confirmationArm = await fetch(`${origin}/preview/live/summer-roofing-guide/thank-you/?split_force=variation`).then((value) => value.text());
   assert.match(confirmationArm, /SYNTHETIC SPLIT-TEST ARM - WARMER THANKS/);
   assert.match(confirmationArm, /You are registered/, 'the confirmation variation starts as a duplicate');
-
-  const readMetrics = async () => (await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/config`, {
-    headers: { 'X-Demo-Mode': 'production' },
-  }).then((value) => value.json())).config.metrics;
-  const metricsBefore = await readMetrics();
-  for (let i = 0; i < 10; i += 1) await fetch(`${origin}/preview/live/summer-roofing-guide`);
-  await fetch(`${origin}/preview/live/summer-roofing-guide?console=1`);
-  await fetch(`${origin}/preview/live/summer-roofing-guide/thank-you/`);
-  const metricsAfter = await readMetrics();
-  assert.equal(metricsAfter.views, metricsBefore.views + 10, 'registration loads count as views; console thumbnails and confirmation loads do not');
-  assert.ok(metricsAfter.optins >= metricsBefore.optins && metricsAfter.optins <= metricsBefore.optins + 10, 'a share of counted views simulate opt-ins');
 });
