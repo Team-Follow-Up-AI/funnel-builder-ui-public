@@ -514,6 +514,8 @@ iframe.preview { display: block; border: none; background: #fff; overflow: auto;
 .split-middle { display: grid; gap: 10px; justify-items: center; text-align: center; align-self: center; padding: 10px 0; }
 .split-middle input[type='range'] { width: 180px; accent-color: var(--mode); }
 .split-end { justify-self: center; }
+.split-save { display: flex; justify-content: center; padding: 0 14px 14px; }
+.split-save button:disabled { opacity: .45; cursor: default; }
 .split-notice { border-top: 1px solid var(--border); }
 @media (max-width: 860px) {
   .split-grid { grid-template-columns: 1fr; justify-items: center; }

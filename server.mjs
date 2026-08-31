@@ -54,14 +54,21 @@ const requestedMode = (req) => req.headers['x-demo-mode'] === 'production' ? 'pr
 
 const findFunnel = (slug, mode) => sandboxState[mode].find((item) => item.slug === slug);
 
-const previewDocument = (slug, kind, variation = null) => `<!doctype html>
+// A variation created from the console starts as an exact duplicate of the
+// control page (duplicateOfControl); only the seeded, already-edited fixture
+// variation renders distinct content. The kicker still names the arm so the
+// sandbox label and the tests can tell duplicates apart.
+const previewDocument = (slug, kind, variation = null) => {
+  const edited = Boolean(variation && !variation.duplicateOfControl);
+  return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${slug} synthetic preview</title><link rel="stylesheet" href="/preview.css"></head>
-<body><main class="preview-page${variation ? ' variation' : ''}"><span class="preview-kicker">${variation ? `SYNTHETIC SPLIT-TEST ARM - ${variation.name.toUpperCase()}` : kind === 'live' ? 'SYNTHETIC CURRENT VERSION' : 'SYNTHETIC EDITABLE DRAFT'}</span>
-<h1>${variation ? 'A bolder promise for your next move' : 'A clearer path to your next move'}</h1><p>${variation ? 'This is the alternative page served to part of the randomised traffic in this split test.' : 'See the practical steps homeowners can use to plan with confidence.'}</p>
+<body><main class="preview-page${edited ? ' variation' : ''}"><span class="preview-kicker">${variation ? `SYNTHETIC SPLIT-TEST ARM - ${variation.name.toUpperCase()}` : kind === 'live' ? 'SYNTHETIC CURRENT VERSION' : 'SYNTHETIC EDITABLE DRAFT'}</span>
+<h1>${edited ? 'A bolder promise for your next move' : 'A clearer path to your next move'}</h1><p>${edited ? 'This is the alternative page served to part of the randomised traffic in this split test.' : 'See the practical steps homeowners can use to plan with confidence.'}</p>
 <form action="/blocked-submission" method="post"><label>Name <input name="name" value="Sample Visitor" disabled></label>
 <label>Phone <input name="phone" value="+1 555 010 0200" disabled></label><button disabled>Submission disabled</button></form>
-<small>Fixture: ${slug}${variation ? ` (${variation.key})` : ''}. This page is generated locally and cannot submit, track, or navigate externally.</small></main></body></html>`;
+<small>Fixture: ${slug}${variation ? ` (${variation.key}${variation.duplicateOfControl ? ', duplicated from control' : ''})` : ''}. This page is generated locally and cannot submit, track, or navigate externally.</small></main></body></html>`;
+};
 
 /** Weighted, sticky arm assignment for a running split test. Forced arms (the
  * console's side-by-side previews) never count as visits or set the cookie. */
@@ -184,7 +191,7 @@ export const createSandboxServer = () => {
         funnel.splitTest = {
           status: 'running',
           controlWeight: 50,
-          variation: { key: 'variation-b', name, createdAt: new Date().toISOString() },
+          variation: { key: 'variation-b', name, createdAt: new Date().toISOString(), duplicateOfControl: true },
           observed: { control: 0, variation: 0 },
         };
         return reply(201, { success: true, simulated: true, splitTest: structuredClone(funnel.splitTest) });

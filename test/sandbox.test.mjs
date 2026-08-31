@@ -122,6 +122,12 @@ test('runs split tests with weighted, sticky, and forced preview arms', async ()
   assert.equal(created.status, 201);
   assert.equal((await created.json()).splitTest.controlWeight, 50);
 
+  const dupArm = await fetch(`${origin}/preview/live/summer-roofing-guide?split_force=variation`).then((value) => value.text());
+  assert.match(dupArm, /SYNTHETIC SPLIT-TEST ARM/);
+  assert.match(dupArm, /A clearer path to your next move/, 'a new variation starts as a duplicate of the control page');
+  const editedArm = await fetch(`${origin}/preview/live/home-value-workshop?split_force=variation`).then((value) => value.text());
+  assert.match(editedArm, /A bolder promise for your next move/, 'the seeded, already-edited variation keeps its own content');
+
   const duplicate = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, { method: 'POST' });
   assert.equal(duplicate.status, 409);
   const badWeight = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {

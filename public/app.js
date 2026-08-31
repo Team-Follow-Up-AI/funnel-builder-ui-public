@@ -2047,6 +2047,7 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
             class: "split-grid"
         }, splitArmPanel({
             flag: "Control",
+            name: "Variation A",
             weightPill: el("span", {
                 class: "pill env"
             }, "100%"),
@@ -2102,11 +2103,20 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
         value: String(controlWeight),
         "aria-label": "Percent of randomised traffic sent to the control page"
     });
+    const saveButton = el("button", {
+        class: "act go",
+        type: "button",
+        disabled: true
+    }, "Save");
     slider.addEventListener("input", () => {
         controlWeight = Number(slider.value);
         paintReadout();
+        const dirty = controlWeight !== split.controlWeight;
+        saveButton.disabled = !dirty;
+        say(dirty ? `Unsaved changes. Live traffic still splits ${split.controlWeight}/${100 - split.controlWeight} until you save.` : "");
     });
-    slider.addEventListener("change", async () => {
+    saveButton.addEventListener("click", async () => {
+        saveButton.disabled = true;
         const saved = await api(`/funnels/${slug}/split-test`, {
             mode: "production",
             method: "PUT",
@@ -2116,11 +2126,11 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
             syncChrome: false
         });
         if (saved.success) {
-            controlWeight = saved.splitTest.controlWeight;
+            split.controlWeight = saved.splitTest.controlWeight;
+            controlWeight = split.controlWeight;
             say(`Saved. New randomised visitors now split ${controlWeight}/${100 - controlWeight}.`);
         } else {
-            slider.value = String(split.controlWeight);
-            controlWeight = split.controlWeight;
+            saveButton.disabled = false;
             say(saved.error || "The traffic split could not be saved.", true);
         }
         paintReadout();
@@ -2129,6 +2139,7 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
         class: "split-grid"
     }, splitArmPanel({
         flag: "Control",
+        name: "Variation A",
         weightPill: controlWeightPill,
         url: splitArmUrl(canonicalUrl, "control"),
         editHref: `#/funnels/${slug}/build`,
@@ -2163,7 +2174,9 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
         editHref: `#/funnels/${slug}/build/variation`,
         canEdit: canEdit,
         visits: split.observed?.variation
-    })), notice);
+    })), el("div", {
+        class: "split-save"
+    }, saveButton), notice);
     return card;
 }
 
