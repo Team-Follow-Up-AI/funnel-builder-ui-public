@@ -149,6 +149,70 @@ const el = (tag, attrs = {}, ...kids) => {
 
 const when = iso => iso ? new Date(iso).toLocaleString() : "-";
 
+// Every schedule carries the IANA time zone it was entered in (Eastern by
+// default) and is always shown in that zone with its abbreviation, so a
+// "9:00 AM ET" schedule never silently turns into the viewer's local time.
+const DEFAULT_SCHEDULE_ZONE = "America/New_York";
+
+const SCHEDULE_ZONES = [ {
+    id: "America/New_York",
+    label: "Eastern (ET)"
+}, {
+    id: "America/Chicago",
+    label: "Central (CT)"
+}, {
+    id: "America/Denver",
+    label: "Mountain (MT)"
+}, {
+    id: "America/Los_Angeles",
+    label: "Pacific (PT)"
+}, {
+    id: "Europe/London",
+    label: "UK (London)"
+} ];
+
+const whenInZone = (iso, timeZone) => {
+    if (!iso) return "-";
+    try {
+        return new Date(iso).toLocaleString("en-US", {
+            timeZone: timeZone || DEFAULT_SCHEDULE_ZONE,
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+            timeZoneName: "short"
+        });
+    } catch {
+        return new Date(iso).toLocaleString();
+    }
+};
+
+// "YYYY-MM-DDTHH:MM" wall clock of an instant in a zone (datetime-local shape).
+const wallClockInZone = (date, timeZone) => {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: timeZone,
+        hourCycle: "h23",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+    }).formatToParts(date);
+    const get = type => parts.find(part => part.type === type).value;
+    return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+};
+
+// The instant a "YYYY-MM-DDTHH:MM" wall clock names in a zone. Two passes so a
+// DST shift between the first guess and the answer still lands on the hour the
+// user picked.
+const instantFromWallClock = (value, timeZone) => {
+    const guess = Date.parse(`${value}:00Z`);
+    if (!Number.isFinite(guess)) return null;
+    const offsetAt = ts => Date.parse(`${wallClockInZone(new Date(ts), timeZone)}:00Z`) - ts;
+    return new Date(guess - offsetAt(guess - offsetAt(guess)));
+};
+
 const modeLine = mode => mode === "production" ? "Real view" : "Test mode";
 
 const MODE_KEY = "demo-console-mode";
@@ -277,8 +341,10 @@ function route() {
     view.replaceChildren(el("p", {
         class: "muted"
     }, "Loading…"));
-    const build = hash.match(/^#\/funnels\/([a-z0-9-]+)\/build$/i);
-    if (build) return renderBuild(view, build[1], request);
+    const build = hash.match(/^#\/funnels\/([a-z0-9-]+)\/build(?:\/(variation))?$/i);
+    if (build) return renderBuild(view, build[1], request, build[2] ? "variation" : "control");
+    const performance = hash.match(/^#\/funnels\/([a-z0-9-]+)\/performance$/i);
+    if (performance) return renderPerformance(view, performance[1], request);
     const detail = hash.match(/^#\/funnels\/([a-z0-9-]+)/i);
     if (detail) return renderFunnel(view, detail[1], request);
     const hit = ROUTES.find(r => hash.startsWith(r.hash)) || ROUTES[0];
@@ -586,6 +652,36 @@ function mergeFunnelWorkspace(liveFunnels = [], testFunnels = [], {liveKnown: li
     });
 }
 
+const LIVE_THUMB_WIDTH = 148;
+
+function livePreviewThumb(canonicalUrl, slug, width = LIVE_THUMB_WIDTH) {
+    const device = PREVIEW_DEVICES.desktop;
+    const scale = width / device.width;
+    const frame = el("iframe", {
+        class: "preview",
+        title: `Read-only live preview of ${slug}`,
+        scrolling: "no",
+        loading: "lazy",
+        tabindex: "-1",
+        "aria-hidden": "true",
+        ...previewFrameAttributes(`${canonicalUrl}${canonicalUrl.includes("?") ? "&" : "?"}console=1`)
+    });
+    frame.style.width = `${device.width}px`;
+    frame.style.height = `${device.height}px`;
+    const scaler = el("div", {
+        class: "preview-scaler"
+    }, frame);
+    scaler.style.width = `${device.width}px`;
+    scaler.style.height = `${device.height}px`;
+    scaler.style.transform = `scale(${scale})`;
+    const stage = el("div", {
+        class: "preview-stage live-thumb"
+    }, scaler);
+    stage.style.width = `${device.width * scale}px`;
+    stage.style.height = `${device.height * scale}px`;
+    return stage;
+}
+
 function funnelPageCell(f) {
     if (!f.published) {
         return el("td", {}, el("span", {
@@ -598,13 +694,15 @@ function funnelPageCell(f) {
     }, "Canonical link unavailable");
     return el("td", {
         class: "mono"
-    }, el("a", {
+    }, el("div", {
+        class: "page-cell"
+    }, livePreviewThumb(f.canonicalUrl, f.slug), el("a", {
         href: f.canonicalUrl,
         target: "_blank",
         rel: "noopener",
         title: `Open ${f.slug}'s current canonical live page`,
         onclick: event => event.stopPropagation()
-    }, "Open live"));
+    }, "Open live")));
 }
 
 const FUNNEL_COLUMNS = [ {
@@ -717,7 +815,7 @@ async function renderFunnels(view, request) {
         const releases = history.ok ? history.releases || [] : [];
         const deploymentIdentity = deployedReleaseIdentity(releases);
         const liveRelease = deploymentIdentity.current;
-        const latestRelease = releases[0] || null;
+        const latestRelease = releases.find(release => release?.status !== "split_test") || null;
         const ordinaryDraftState = draftWorkspaceState({
             published: funnel.published,
             liveKnown: funnel.liveKnown,
@@ -1360,13 +1458,16 @@ function deliveryToggle(slug, c, mode = "test", deps = {}) {
 }
 
 async function renderFunnel(view, slug, request) {
-    const [liveConfig, testConfig, diagnosis, history, status] = await Promise.all([ api(`/funnels/${slug}/config`, {
+    const [liveConfig, testConfig, diagnosis, splitState, history, status] = await Promise.all([ api(`/funnels/${slug}/config`, {
         mode: "production",
         syncChrome: false
     }), api(`/funnels/${slug}/config`, {
         mode: "test",
         syncChrome: false
     }), api(`/funnels/${slug}/diagnosis`, {
+        mode: "production",
+        syncChrome: false
+    }), api(`/funnels/${slug}/split-test`, {
         mode: "production",
         syncChrome: false
     }), state.coauthorConfigured ? coauthor(`/releases?funnel=${encodeURIComponent(slug)}`) : Promise.resolve({
@@ -1393,7 +1494,7 @@ async function renderFunnel(view, slug, request) {
     const releases = history.ok ? history.releases || [] : [];
     const deploymentIdentity = deployedReleaseIdentity(releases);
     const liveRelease = deploymentIdentity.current;
-    const latestRelease = releases[0] || null;
+    const latestRelease = releases.find(release => release?.status !== "split_test") || null;
     const draftState = draftWorkspaceState({
         published: published,
         liveKnown: liveKnown,
@@ -1466,26 +1567,9 @@ async function renderFunnel(view, slug, request) {
         }, `Latest release is incomplete. ${describeRelease(latestRelease).text}`));
     }
     if (published) wrap.append(readOnlyConfigCard(c));
-    const releaseRows = releases.length ? releases.map(release => {
-        const current = deploymentIdentity.current?.id && release.id === deploymentIdentity.current.id;
-        const lastVerified = deploymentIdentity.state === "unverified" && deploymentIdentity.lastVerified?.id === release.id;
-        const currentComplete = current && release.status === "deployed_verified";
-        return el("div", {
-            class: "row"
-        }, el("div", {
-            class: "grow"
-        }, el("div", {
-            class: "label"
-        }, `v${release.version ?? "?"} · ${String(release.id || "").slice(0, 12) || "unknown SHA"}`, current ? el("span", {
-            class: `pill ${currentComplete ? "live" : "blocker"}`
-        }, currentComplete ? "Current deployed" : "Current deployed, incomplete") : null, lastVerified ? el("span", {
-            class: "pill"
-        }, "Last verified") : null), el("div", {
-            class: "headline"
-        }, describeRelease(release).text), el("div", {
-            class: "muted"
-        }, release.deploymentVerification?.verifiedAt ? `Verified ${utcWhen(release.deploymentVerification.verifiedAt)}` : release.committedAt ? `Committed ${when(release.committedAt)}` : "Time unavailable")));
-    }) : [ el("div", {
+    if (published && c.metrics) wrap.append(performanceCard(slug, c.metrics, liveRelease));
+    if (published && productionUrl) wrap.append(splitTestCard(slug, productionUrl, splitState, testConfig.success));
+    const releaseRows = releases.length ? releases.map(release => versionRow(slug, release, deploymentIdentity, splitState)) : [ el("div", {
         class: history.ok ? "body muted" : "body err"
     }, history.ok ? "No release records yet." : history.error) ];
     wrap.append(el("div", {
@@ -1949,9 +2033,665 @@ function promotionReviewDialog(binding, {funnelName: funnelName, onCommit: onCom
     };
 }
 
+const SPLIT_THUMB_WIDTH = 264;
+
+const splitArmUrl = (canonicalUrl, arm) => `${canonicalUrl}${canonicalUrl.includes("?") ? "&" : "?"}split_force=${arm}`;
+
+function splitArmPanel({flag: flag, name: name, weightPill: weightPill, url: url, editHref: editHref, canEdit: canEdit, visits: visits, optins: optins, pickWinner: pickWinner}) {
+    return el("div", {
+        class: "split-arm"
+    }, el("span", {
+        class: "split-flag"
+    }, `⚑ ${flag}`, weightPill), name ? el("span", {
+        class: "muted"
+    }, name) : null, livePreviewThumb(url, `${flag} arm`, SPLIT_THUMB_WIDTH), el("div", {
+        class: "split-actions"
+    }, canEdit ? el("a", {
+        class: "act go",
+        href: editHref
+    }, "Edit") : el("span", {
+        class: "muted",
+        title: "No Test draft is available to edit."
+    }, "No draft"), el("a", {
+        class: "act",
+        href: url,
+        target: "_blank",
+        rel: "noopener",
+        title: `Open the ${flag.toLowerCase()} page in its own tab.`
+    }, "Open ↗"), pickWinner ? el("button", {
+        class: "act",
+        type: "button",
+        title: "End the split test with this page as the live funnel.",
+        onclick: pickWinner
+    }, "🏆 Pick winner") : null), visits != null ? el("span", {
+        class: "mono muted"
+    }, `${visits} randomised visits`) : null, optins != null ? el("span", {
+        class: "mono muted"
+    }, `${optins} opt-ins${visits > 0 ? ` (${(optins / visits * 100).toFixed(1)}%)` : ""}`) : null);
+}
+
+const PAGE_THUMB_WIDTH = 148;
+
+function statTiles(metrics) {
+    const views = Number(metrics.views) || 0;
+    const optins = Number(metrics.optins) || 0;
+    const rate = views > 0 ? `${(optins / views * 100).toFixed(1)}%` : "—";
+    const tile = (label, value, hint) => el("div", {
+        class: "stat-tile"
+    }, el("span", {
+        class: "stat-label"
+    }, label), el("span", {
+        class: "stat-value"
+    }, value), hint ? el("span", {
+        class: "muted"
+    }, hint) : null);
+    return el("div", {
+        class: "stat-grid"
+    }, tile("Views", views.toLocaleString(), "Registration page loads"), tile("Opt-ins", optins.toLocaleString(), "Simulated form submissions"), tile("Opt-in rate", rate, views > 0 ? `${optins.toLocaleString()} of ${views.toLocaleString()} views` : "No views yet"));
+}
+
+const releaseDisplayName = release => release.name || String(release.id || "").slice(0, 12) || "unknown SHA";
+
+function performanceCard(slug, metrics, liveRelease) {
+    return el("div", {
+        class: "card"
+    }, el("h2", {}, el("a", {
+        class: "perf-link",
+        href: `#/funnels/${slug}/performance`,
+        title: "See the performance of every version of this funnel."
+    }, "Performance", el("span", {
+        class: "perf-link-arrow",
+        "aria-hidden": "true"
+    }, "→")), el("span", {
+        class: "pill env"
+    }, "Synthetic"), liveRelease ? el("span", {
+        class: "perf-showing"
+    }, `Showing: v${liveRelease.version ?? "?"} · ${releaseDisplayName(liveRelease)} (current live version)`) : null), statTiles(metrics));
+}
+
+// Drill-down route: the performance of every version of one funnel, in a
+// table. Reached by clicking the Performance header on the funnel page.
+async function renderPerformance(view, slug, request) {
+    const [liveConfig, splitState, history] = await Promise.all([ api(`/funnels/${slug}/config`, {
+        mode: "production",
+        syncChrome: false
+    }), api(`/funnels/${slug}/split-test`, {
+        mode: "production",
+        syncChrome: false
+    }), state.coauthorConfigured ? coauthor(`/releases?funnel=${encodeURIComponent(slug)}`) : Promise.resolve({
+        ok: false,
+        error: "Release history is unavailable."
+    }) ]);
+    if (!routeResponseIsCurrent(request)) return;
+    if (!liveConfig.success) return view.replaceChildren(errorCard({
+        error: liveConfig.error || "The live funnel is unavailable."
+    }));
+    const c = liveConfig.config;
+    const releases = history.ok ? history.releases || [] : [];
+    const deploymentIdentity = deployedReleaseIdentity(releases);
+    const pages = splitState.success && Array.isArray(splitState.pages) ? splitState.pages : [];
+    const runningVersions = new Map();
+    pages.forEach(page => {
+        if (page.splitTest?.status === "running" && page.splitTest.versionNumber != null) runningVersions.set(Number(page.splitTest.versionNumber), page.label);
+    });
+    const pageLabel = key => pages.find(page => page.key === key)?.label || key;
+    const rateOf = metrics => {
+        const views = Number(metrics?.views) || 0;
+        const optins = Number(metrics?.optins) || 0;
+        return views > 0 ? `${(optins / views * 100).toFixed(1)}%` : "—";
+    };
+    const rows = releases.map(release => {
+        const current = deploymentIdentity.current?.id && release.id === deploymentIdentity.current.id;
+        const testing = runningVersions.has(Number(release.version));
+        const metrics = release.metrics || {};
+        return el("tr", {}, el("td", {
+            class: "mono"
+        }, `v${release.version ?? "?"}`), el("td", {}, el("div", {
+            class: "label"
+        }, releaseDisplayName(release)), el("div", {
+            class: "muted"
+        }, release.status === "split_test" ? "Split-test variation" : release.variation ? "Promoted winner" : "Release")), el("td", {}, release.page ? pageLabel(release.page) : "All pages"), el("td", {}, current ? el("span", {
+            class: "pill live"
+        }, "Current live") : testing ? el("span", {
+            class: "pill draft"
+        }, "In split test") : el("span", {
+            class: "muted"
+        }, "Previous")), el("td", {
+            class: "mono"
+        }, (Number(metrics.views) || 0).toLocaleString()), el("td", {
+            class: "mono"
+        }, (Number(metrics.optins) || 0).toLocaleString()), el("td", {
+            class: "mono"
+        }, rateOf(metrics)), el("td", {
+            class: "muted"
+        }, release.committedAt ? when(release.committedAt) : "—"), el("td", {}, el("a", {
+            class: "act",
+            href: `/preview/version/${slug}/${release.version}`,
+            target: "_blank",
+            rel: "noopener"
+        }, "Open ↗")));
+    });
+    const head = el("tr", {}, ...[ "Version", "Name", "Page", "State", "Views", "Opt-ins", "Opt-in rate", "Created", "" ].map(label => el("th", {}, label)));
+    view.replaceChildren(el("div", {}, el("div", {
+        class: "card"
+    }, el("h2", {}, el("a", {
+        href: `#/funnels/${slug}`
+    }, `← ${c.name || slug}`), "Performance", el("span", {
+        class: "pill env"
+    }, "Synthetic")), el("div", {
+        class: "body muted"
+    }, "Every version of this funnel and the traffic it received while live. Split-test variations count the visitors their arm was shown to."), c.metrics ? statTiles(c.metrics) : null), el("div", {
+        class: "card"
+    }, el("h2", {}, "All versions"), rows.length ? el("div", {
+        class: "table-scroll"
+    }, el("table", {
+        class: "list"
+    }, el("thead", {}, head), el("tbody", {}, ...rows))) : el("div", {
+        class: history.ok ? "body muted" : "body err"
+    }, history.ok ? "No version records yet." : history.error))));
+}
+
+function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
+    const card = el("div", {
+        class: "card"
+    });
+    card.append(el("h2", {}, "Split tests", el("span", {
+        class: "pill env"
+    }, "Synthetic")));
+    if (!splitResponse.success) {
+        card.append(el("div", {
+            class: "body err"
+        }, `Split-test state is unavailable. ${splitResponse.error || "The Production API did not answer."}`));
+        return card;
+    }
+    const pages = Array.isArray(splitResponse.pages) ? splitResponse.pages : [];
+    const schedules = Array.isArray(splitResponse.schedules) ? splitResponse.schedules : [];
+    card.append(el("div", {
+        class: "body muted"
+    }, "Each page of this funnel can run its own split test. Click a page to manage its test."));
+    pages.forEach(page => card.append(pageSplitRow(slug, canonicalUrl, page, canEdit, schedules.filter(item => item.page === page.key))));
+    const pageLabel = key => pages.find(page => page.key === key)?.label || key || "Registration page";
+    const history = Array.isArray(splitResponse.history) ? splitResponse.history : [];
+    if (history.length) card.append(el("div", {
+        class: "split-history"
+    }, el("span", {
+        class: "split-flag"
+    }, "Previous tests"), ...[ ...history ].reverse().map(entry => el("div", {
+        class: "split-history-row"
+    }, el("strong", {}, `${pageLabel(entry.page)}: Control vs ${entry.variation.name}`), el("span", {
+        class: `pill ${entry.outcome === "ended" ? "env" : "live"}`
+    }, entry.outcome === "variation" ? `Winner: ${entry.variation.name}` : entry.outcome === "control" ? "Winner: Control" : "No winner"), el("span", {
+        class: "muted"
+    }, `${when(entry.startedAt)} → ${when(entry.endedAt)}`), el("span", {
+        class: "mono muted"
+    }, `Final split ${entry.controlWeight}/${100 - entry.controlWeight} · ${entry.observed?.control ?? 0} vs ${entry.observed?.variation ?? 0} visits${entry.optins ? ` · ${entry.optins.control} vs ${entry.optins.variation} opt-ins` : ""}`)))));
+    return card;
+}
+
+// One expandable row per funnel page inside the Split tests card: the summary
+// shows a live picture of the page and its test status; expanding it opens
+// the split-test console scoped to that page, including its schedule queue.
+function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
+    const base = page.path ? `${canonicalUrl.replace(/\/+$/, "")}/${page.path}` : canonicalUrl;
+    const statusPill = el("span", {
+        class: "pill",
+        style: "display:none"
+    });
+    const setStatus = (kind, text) => {
+        statusPill.style.display = text ? "" : "none";
+        statusPill.className = `pill ${kind}`;
+        statusPill.textContent = text;
+    };
+    const summaryLine = el("div", {
+        class: "muted"
+    });
+    const notice = el("div", {
+        class: "body muted split-notice",
+        role: "status",
+        "aria-live": "polite",
+        hidden: true
+    });
+    const say = (text, bad = false) => {
+        notice.hidden = !text;
+        notice.className = `body split-notice ${bad ? "err" : "muted"}`;
+        notice.textContent = text || "";
+    };
+    const content = el("div", {});
+    const describeSchedule = item => item.action === "start_split" ? `Start split test ("${item.name}")` : "Make the variation live";
+    const pendingSchedules = schedules.filter(item => item.status === "pending").sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    const scheduleHint = pendingSchedules.length ? ` · ⏱ ${describeSchedule(pendingSchedules[0])} ${whenInZone(pendingSchedules[0].at, pendingSchedules[0].timeZone)}` : "";
+    // The schedule controls live directly under the variation panel, so they
+    // only exist while a variation does: an unsaved variation can be
+    // scheduled to start later instead of saving it now, and a running
+    // test's variation can be scheduled to become the live page. The picked
+    // date and time are wall clock in the selected zone (Eastern by default),
+    // not the viewer's local time.
+    const buildScheduleBox = ({pending: pending, split: split, slider: slider}) => {
+        const scheduleWhen = el("input", {
+            type: "datetime-local",
+            "aria-label": `When to run the scheduled action for the ${page.label.toLowerCase()}`
+        });
+        scheduleWhen.addEventListener("click", () => {
+            if (typeof scheduleWhen.showPicker === "function") try {
+                scheduleWhen.showPicker();
+            } catch {}
+        });
+        const scheduleZone = el("select", {
+            "aria-label": `Time zone for the scheduled action on the ${page.label.toLowerCase()}`
+        }, SCHEDULE_ZONES.map(zone => el("option", {
+            value: zone.id
+        }, zone.label)));
+        scheduleZone.value = DEFAULT_SCHEDULE_ZONE;
+        const presetChip = (label, valueFor) => el("button", {
+            class: "act",
+            type: "button",
+            onclick: () => {
+                scheduleWhen.value = valueFor();
+            }
+        }, label);
+        const tomorrowAt = hour => `${wallClockInZone(new Date(Date.now() + 864e5), scheduleZone.value).slice(0, 10)}T${String(hour).padStart(2, "0")}:00`;
+        const scheduleButton = el("button", {
+            class: "act",
+            type: "button"
+        }, "⏱ Schedule");
+        scheduleButton.addEventListener("click", async () => {
+            if (!scheduleWhen.value) return say("Pick a date and time for the schedule first.", true);
+            const at = instantFromWallClock(scheduleWhen.value, scheduleZone.value);
+            if (!at) return say("Pick a date and time for the schedule first.", true);
+            if (!(at.getTime() > Date.now())) return say("The scheduled time must be in the future.", true);
+            scheduleButton.disabled = true;
+            const created = await api(`/funnels/${slug}/schedules`, {
+                mode: "production",
+                method: "POST",
+                body: pending ? {
+                    page: page.key,
+                    action: "start_split",
+                    at: at.toISOString(),
+                    timeZone: scheduleZone.value,
+                    name: split.variation.name,
+                    controlWeight: Number(slider.value)
+                } : {
+                    page: page.key,
+                    action: "promote_variation",
+                    at: at.toISOString(),
+                    timeZone: scheduleZone.value
+                },
+                syncChrome: false
+            });
+            if (created.success) return route();
+            scheduleButton.disabled = false;
+            say(created.error || "The schedule could not be saved.", true);
+        });
+        return el("div", {
+            class: "split-arm-schedule"
+        }, el("span", {
+            class: "split-flag"
+        }, "⏱ Schedule"), el("span", {
+            class: "muted"
+        }, pending ? "Start this split test automatically at:" : `Make ${split.variation.name} the live page automatically at:`), el("div", {
+            class: "split-schedule-form"
+        }, scheduleWhen, scheduleZone, scheduleButton), el("div", {
+            class: "split-schedule-presets"
+        }, el("span", {
+            class: "muted"
+        }, "Quick pick:"), presetChip("In 1 hour", () => wallClockInZone(new Date(Date.now() + 36e5), scheduleZone.value)), presetChip("Tomorrow 06:00", () => tomorrowAt(6)), presetChip("Tomorrow 09:00", () => tomorrowAt(9)), presetChip("Tomorrow 21:00", () => tomorrowAt(21))));
+    };
+    const renderEmpty = () => {
+        setStatus("", "");
+        summaryLine.textContent = "No split test running." + scheduleHint;
+        content.replaceChildren(el("div", {
+            class: "split-grid"
+        }, splitArmPanel({
+            flag: "Control",
+            name: "Variation A",
+            weightPill: el("span", {
+                class: "pill env"
+            }, "100%"),
+            url: splitArmUrl(base, "control"),
+            editHref: `#/funnels/${slug}/build`,
+            canEdit: canEdit
+        }), el("div", {
+            class: "split-middle muted"
+        }, el("strong", {}, "Start split test"), el("span", {}, `Send part of the randomised live traffic to an alternative ${page.label.toLowerCase()}.`)), el("div", {
+            class: "split-create"
+        }, el("button", {
+            class: "act go",
+            type: "button",
+            onclick: () => {
+                renderArms(null);
+            }
+        }, "＋ Create variation"))));
+    };
+    // renderArms draws the two-arm console. saved is the splitTest object the
+    // server already holds, or null for a variation that was just created in
+    // the UI: that one is a local duplicate of the page and nothing is sent
+    // to the server until Save.
+    const renderArms = (saved) => {
+        const pending = !saved;
+        const split = saved || {
+            controlWeight: 50,
+            variation: {
+                key: "variation-b",
+                name: "Variation B",
+                duplicateOfControl: true
+            },
+            observed: null
+        };
+        setStatus(pending ? "draft" : "live", pending ? "Unsaved" : "Running");
+        const paintSummary = () => {
+            summaryLine.textContent = (pending ? "Unsaved variation - not live yet." : `Running: Control ${split.controlWeight}% · ${split.variation.name} ${100 - split.controlWeight}%`) + scheduleHint;
+        };
+        paintSummary();
+        let controlWeight = split.controlWeight;
+        const readout = el("span", {
+            class: "mono"
+        });
+        const controlWeightPill = el("span", {
+            class: "pill env"
+        });
+        const variationWeightPill = el("span", {
+            class: "pill env"
+        });
+        const paintReadout = () => {
+            readout.textContent = `Control ${controlWeight}% · ${split.variation.name} ${100 - controlWeight}%`;
+            controlWeightPill.textContent = `${controlWeight}%`;
+            variationWeightPill.textContent = `${100 - controlWeight}%`;
+        };
+        paintReadout();
+        const slider = el("input", {
+            type: "range",
+            min: "0",
+            max: "100",
+            step: "5",
+            value: String(controlWeight),
+            "aria-label": `Percent of randomised traffic sent to the control ${page.label.toLowerCase()}`
+        });
+        const saveButton = el("button", {
+            class: "act go",
+            type: "button",
+            disabled: !pending
+        }, pending ? "▶ Start split test immediately" : "Save");
+        slider.addEventListener("input", () => {
+            controlWeight = Number(slider.value);
+            paintReadout();
+            if (pending) return;
+            const dirty = controlWeight !== split.controlWeight;
+            saveButton.disabled = !dirty;
+            say(dirty ? `Unsaved changes. Live traffic still splits ${split.controlWeight}/${100 - split.controlWeight} until you save.` : "");
+        });
+        saveButton.addEventListener("click", async () => {
+            if (pending && !confirm("Are you sure you would like to start the split test now?")) return;
+            saveButton.disabled = true;
+            const saved2 = await api(`/funnels/${slug}/split-test/${page.key}`, {
+                mode: "production",
+                method: pending ? "POST" : "PUT",
+                body: pending ? {
+                    name: split.variation.name,
+                    controlWeight: Number(slider.value)
+                } : {
+                    controlWeight: Number(slider.value)
+                },
+                syncChrome: false
+            });
+            if (saved2.success) {
+                if (pending) return route();
+                split.controlWeight = saved2.splitTest.controlWeight;
+                controlWeight = split.controlWeight;
+                say(`Saved. New randomised visitors now split ${controlWeight}/${100 - controlWeight}.`);
+                paintSummary();
+            } else {
+                saveButton.disabled = false;
+                say(saved2.error || (pending ? "The variation could not be saved." : "The traffic split could not be saved."), true);
+            }
+            paintReadout();
+        });
+        const pickWinner = (arm, armName) => async () => {
+            const message = arm === "control" ? `Keep Control (Variation A) as the live ${page.label.toLowerCase()}? This ends the split test and all traffic returns to it.` : `Make ${armName} the live ${page.label.toLowerCase()}? This ends the split test and sends all traffic to it.`;
+            if (!confirm(message)) return;
+            const picked = await api(`/funnels/${slug}/split-test/${page.key}/winner`, {
+                mode: "production",
+                method: "POST",
+                body: {
+                    winner: arm
+                },
+                syncChrome: false
+            });
+            if (picked.success) return route();
+            say(picked.error || "The winner could not be saved.", true);
+        };
+        const middleButton = el("button", {
+            class: "act split-end",
+            type: "button",
+            onclick: async event => {
+                if (pending) {
+                    say("");
+                    renderEmpty();
+                    return;
+                }
+                if (!confirm(`End this split test? All live traffic returns to the control ${page.label.toLowerCase()}.`)) return;
+                event.target.disabled = true;
+                const ended = await api(`/funnels/${slug}/split-test/${page.key}`, {
+                    mode: "production",
+                    method: "DELETE",
+                    syncChrome: false
+                });
+                if (ended.success) return route();
+                event.target.disabled = false;
+                say(ended.error || "The split test could not be ended.", true);
+            }
+        }, pending ? "Discard variation" : "End split test");
+        const controlCell = splitArmPanel({
+            flag: "Control",
+            name: "Variation A",
+            weightPill: controlWeightPill,
+            url: splitArmUrl(base, "control"),
+            editHref: `#/funnels/${slug}/build`,
+            canEdit: canEdit,
+            visits: split.observed?.control,
+            optins: split.optins?.control,
+            pickWinner: pending ? null : pickWinner("control", "Variation A")
+        });
+        const scheduleBox = buildScheduleBox({
+            pending: pending,
+            split: split,
+            slider: slider
+        });
+        let scheduleToggle = null;
+        if (pending) {
+            scheduleBox.style.display = "none";
+            scheduleToggle = el("button", {
+                class: "act",
+                type: "button",
+                "aria-expanded": "false"
+            }, "⏱ Schedule split test");
+            scheduleToggle.addEventListener("click", () => {
+                const open = scheduleBox.style.display === "none";
+                scheduleBox.style.display = open ? "" : "none";
+                scheduleToggle.setAttribute("aria-expanded", String(open));
+                scheduleToggle.classList.toggle("go", open);
+                saveButton.classList.toggle("go", !open);
+            });
+        }
+        content.replaceChildren(el("div", {
+            class: "split-grid"
+        }, controlCell, el("div", {
+            class: "split-middle"
+        }, el("span", {
+            class: "split-flag"
+        }, "Traffic split"), slider, readout, el("span", {
+            class: "muted"
+        }, "Each new visitor is randomised to hold this split. Returning visitors keep the page they first saw."), middleButton), el("div", {
+            class: "split-arm-stack"
+        }, splitArmPanel({
+            flag: "Variation",
+            name: split.variation.name,
+            weightPill: variationWeightPill,
+            url: splitArmUrl(base, "variation"),
+            editHref: `#/funnels/${slug}/build/variation`,
+            canEdit: canEdit,
+            visits: split.observed?.variation,
+            optins: split.optins?.variation,
+            pickWinner: pending ? null : pickWinner("variation", split.variation.name)
+        }), scheduleBox)), el("div", {
+            class: "split-save"
+        }, saveButton, scheduleToggle));
+        say(pending ? "Unsaved variation. It duplicates the current page; live traffic is unchanged until you start or schedule the test." : "");
+    };
+    if (page.splitTest && page.splitTest.status === "running") renderArms(page.splitTest); else renderEmpty();
+    const scheduleRows = [ ...schedules ].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).map(item => el("div", {
+        class: "split-schedule-row"
+    }, el("span", {
+        class: "mono"
+    }, `⏱ ${whenInZone(item.at, item.timeZone)}`), el("span", {}, describeSchedule(item)), item.status === "pending" ? el("button", {
+        class: "act",
+        type: "button",
+        onclick: async event => {
+            event.target.disabled = true;
+            const removed = await api(`/funnels/${slug}/schedules/${item.id}`, {
+                mode: "production",
+                method: "DELETE",
+                syncChrome: false
+            });
+            if (removed.success) return route();
+            event.target.disabled = false;
+            say(removed.error || "The schedule could not be cancelled.", true);
+        }
+    }, "Cancel") : el("span", {
+        class: `pill ${item.status === "done" ? "live" : "blocker"}`
+    }, item.status === "done" ? "Done" : "Failed"), item.result ? el("span", {
+        class: "muted"
+    }, item.result) : null));
+    const scheduleQueue = scheduleRows.length ? el("div", {
+        class: "split-schedule"
+    }, el("span", {
+        class: "split-flag"
+    }, "⏱ Scheduled"), ...scheduleRows) : null;
+    return el("details", {
+        class: "page-split-row"
+    }, el("summary", {}, livePreviewThumb(splitArmUrl(base, "control"), page.label, PAGE_THUMB_WIDTH), el("div", {
+        class: "grow"
+    }, el("div", {
+        class: "label"
+    }, page.label, statusPill), summaryLine), el("span", {
+        class: "version-caret",
+        "aria-hidden": "true"
+    }, "▸")), content, scheduleQueue, notice);
+}
+
+const VERSION_THUMB_WIDTH = 132;
+
+const VERSION_DETAIL_THUMB_WIDTH = 264;
+
+// One expandable row in the Versions card: the summary line carries the
+// version label (custom name first), status pills, and a live thumbnail of
+// that version's page; expanding it shows the full data for the version plus
+// a rename control.
+function versionRow(slug, release, deploymentIdentity, splitResponse) {
+    const current = deploymentIdentity.current?.id && release.id === deploymentIdentity.current.id;
+    const lastVerified = deploymentIdentity.state === "unverified" && deploymentIdentity.lastVerified?.id === release.id;
+    const currentComplete = current && release.status === "deployed_verified";
+    const versionUrl = `/preview/version/${slug}/${release.version}`;
+    const fallbackName = String(release.id || "").slice(0, 12) || "unknown SHA";
+    const displayName = release.name || fallbackName;
+    const matchedTest = (Array.isArray(splitResponse?.history) ? splitResponse.history : []).find(entry => entry.startedAt && entry.startedAt === release.committedAt) || null;
+    const releasePageLabel = release.page ? (Array.isArray(splitResponse?.pages) ? splitResponse.pages : []).find(page => page.key === release.page)?.label || release.page : null;
+    const pairs = [ [ "Version", `v${release.version ?? "?"}` ], [ "Name", release.name || "—" ], [ "Record id", release.id || "—" ], [ "Status", release.status || "—" ], [ "Type", release.status === "split_test" ? "Split-test variation" : release.variation ? "Promoted split-test winner" : "Release" ], releasePageLabel ? [ "Funnel page", releasePageLabel ] : null, release.variation ? [ "Variation", release.variation.name ] : null, release.variation ? [ "Page content", release.variation.duplicateOfControl ? "Duplicate of control" : "Edited page" ] : null, [ "Committed", release.committedAt ? when(release.committedAt) : "—" ], [ "Verified", release.deploymentVerification?.verifiedAt ? utcWhen(release.deploymentVerification.verifiedAt) : "Not verified" ], release.publicPageValues ? [ "Public page values", publicPageValuesSummary(release) ] : null, matchedTest ? [ "Test outcome", matchedTest.outcome === "variation" ? `Winner: ${matchedTest.variation.name}` : matchedTest.outcome === "control" ? "Winner: Control" : "Ended without a winner" ] : null, matchedTest ? [ "Test traffic", `Final split ${matchedTest.controlWeight}/${100 - matchedTest.controlWeight} · ${matchedTest.observed?.control ?? 0} vs ${matchedTest.observed?.variation ?? 0} visits${matchedTest.optins ? ` · ${matchedTest.optins.control} vs ${matchedTest.optins.variation} opt-ins` : ""}` ] : null ].filter(Boolean);
+    const renameInput = el("input", {
+        type: "text",
+        class: "version-name-input",
+        value: release.name || "",
+        placeholder: fallbackName,
+        maxlength: "60",
+        "aria-label": `Name for version ${release.version}`
+    });
+    const renameButton = el("button", {
+        class: "act go",
+        type: "button"
+    }, "Rename");
+    const renameNote = el("span", {
+        class: "muted",
+        role: "status"
+    });
+    renameButton.addEventListener("click", async () => {
+        renameButton.disabled = true;
+        const saved = await api(`/funnels/${slug}/versions/${release.version}`, {
+            mode: "production",
+            method: "PUT",
+            body: {
+                name: renameInput.value
+            },
+            syncChrome: false
+        });
+        if (saved.success) return route();
+        renameButton.disabled = false;
+        renameNote.textContent = saved.error || "The version could not be renamed.";
+        renameNote.className = "err";
+    });
+    return el("details", {
+        class: "version-row"
+    }, el("summary", {}, el("div", {
+        class: "grow"
+    }, el("div", {
+        class: "label"
+    }, `v${release.version ?? "?"} · ${displayName}`, current ? el("span", {
+        class: `pill ${currentComplete ? "live" : "blocker"}`
+    }, currentComplete ? "Current deployed" : "Current deployed, incomplete") : null, release.status === "split_test" ? el("span", {
+        class: "pill env"
+    }, "Split test") : null, lastVerified ? el("span", {
+        class: "pill"
+    }, "Last verified") : null), el("div", {
+        class: "headline"
+    }, describeRelease(release).text), el("div", {
+        class: "muted"
+    }, release.deploymentVerification?.verifiedAt ? `Verified ${utcWhen(release.deploymentVerification.verifiedAt)}` : release.committedAt ? `Committed ${when(release.committedAt)}` : "Time unavailable")), livePreviewThumb(versionUrl, `version ${release.version} of ${slug}`, VERSION_THUMB_WIDTH), el("span", {
+        class: "version-caret",
+        "aria-hidden": "true"
+    }, "▸")), el("div", {
+        class: "version-detail"
+    }, el("div", {
+        class: "version-detail-preview"
+    }, livePreviewThumb(versionUrl, `version ${release.version} of ${slug}`, VERSION_DETAIL_THUMB_WIDTH), el("a", {
+        class: "act",
+        href: versionUrl,
+        target: "_blank",
+        rel: "noopener",
+        title: "Open this version's page in its own tab."
+    }, "Open ↗")), el("div", {
+        class: "version-detail-data"
+    }, versionStats(release), el("div", {
+        class: "version-data-grid"
+    }, ...pairs.flatMap(([key, value]) => [ el("span", {
+        class: "muted"
+    }, key), el("span", {
+        class: "mono"
+    }, value) ])), el("div", {
+        class: "version-rename"
+    }, renameInput, renameButton, renameNote))));
+}
+
+// Performance of one specific version: the views and opt-ins recorded while
+// that version was serving live traffic (as the deployed version, or as a
+// split-test arm).
+function versionStats(release) {
+    if (!release.metrics) return null;
+    const views = Number(release.metrics.views) || 0;
+    const optins = Number(release.metrics.optins) || 0;
+    const rate = views > 0 ? `${(optins / views * 100).toFixed(1)}%` : "—";
+    const tile = (label, value) => el("div", {
+        class: "stat-tile"
+    }, el("span", {
+        class: "stat-label"
+    }, label), el("span", {
+        class: "stat-value"
+    }, value));
+    return el("div", {
+        class: "stat-grid version-stats"
+    }, tile("Views", views.toLocaleString()), tile("Opt-ins", optins.toLocaleString()), tile("Opt-in rate", rate));
+}
+
 function readOnlyConfigCard(config) {
     const summary = productionSummary(config);
-    return el("div", {
+    const card = el("div", {
         class: "card"
     }, el("h2", {}, "Live configuration", el("span", {
         class: "pill env"
@@ -1987,12 +2727,17 @@ function readOnlyConfigCard(config) {
     }, issue.detail)))) : [ el("div", {
         class: "body muted"
     }, "No configuration issues are reported.") ]);
+    return card;
 }
 
 function describeRelease(release) {
     const version = release?.version == null ? "unknown version" : `v${release.version}`;
     const id = typeof release?.id === "string" && release.id ? release.id.slice(0, 12) : "unknown SHA";
     const status = typeof release?.status === "string" && release.status ? release.status : "status_unavailable";
+    if (typeof release?.note === "string" && release.note) return {
+        status: status,
+        text: `Release ${version} (${id}). ${release.note}`
+    };
     const prefix = `Release ${version} (${id}) - ${status}. Public page values: ${publicPageValuesSummary(release)}.`;
     if (status === "deployed_verified") {
         return {
@@ -2067,7 +2812,7 @@ function coauthorMissingCard() {
     }, "Simulated chat is unavailable. Refresh the local sandbox and try again."));
 }
 
-async function renderBuild(view, slug, request) {
+async function renderBuild(view, slug, request, arm = "control") {
     const cfg = await api(`/funnels/${slug}/config`, {
         mode: "test",
         syncChrome: false
@@ -2799,7 +3544,10 @@ async function renderBuild(view, slug, request) {
         class: "builder-name"
     }, c.name || slug), el("span", {
         class: "muted mono builder-slug"
-    }, slug), el("span", {
+    }, slug), arm === "variation" ? el("span", {
+        class: "pill draft",
+        title: "You entered the builder from the split-test variation. In this sandbox both arms share the same Test draft."
+    }, "Editing: Variation") : null, el("span", {
         class: "spacer"
     }), el("span", {
         class: "pill env"

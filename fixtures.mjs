@@ -1,5 +1,12 @@
 const iso = (daysAgo) => new Date(Date.UTC(2026, 7, 31 - daysAgo, 9, 30)).toISOString();
 
+// Every synthetic funnel is made of these pages; split tests target one page
+// at a time. The empty path is the funnel's landing/registration page.
+export const FUNNEL_PAGES = [
+  { key: 'registration', label: 'Registration page', path: '' },
+  { key: 'confirmation', label: 'Confirmation page', path: 'thank-you/' },
+];
+
 const baseFunnels = [
   {
     slug: 'summer-roofing-guide',
@@ -8,6 +15,7 @@ const baseFunnels = [
     delivery: { enabled: true },
     observed: { lastSeenAt: iso(0), seenCount: 1842 },
     funnelType: 'lead-magnet',
+    metrics: { views: 12840, optins: 1132 },
   },
   {
     slug: 'home-value-workshop',
@@ -16,6 +24,7 @@ const baseFunnels = [
     delivery: { enabled: true },
     observed: { lastSeenAt: iso(1), seenCount: 763 },
     funnelType: 'webinar',
+    metrics: { views: 9614, optins: 1201 },
   },
   {
     slug: 'partner-referral',
@@ -24,11 +33,71 @@ const baseFunnels = [
     delivery: { enabled: false },
     observed: { lastSeenAt: iso(9), seenCount: 38 },
     funnelType: 'appointment',
+    metrics: { views: 0, optins: 0 },
   },
 ];
 
+const release = (slug, version, daysAgo, status = 'deployed_verified') => ({
+  id: `fixture-${slug}-v${version}`,
+  version,
+  status,
+  committedAt: iso(daysAgo),
+  deploymentVerification: { verifiedAt: iso(daysAgo) },
+  publicPageValues: { fixture_proof_count: version === 3 ? '7,104' : '6,980' },
+  metrics: version === 3 ? { views: 5104, optins: 638 } : version === 2 ? { views: 4406, optins: 401 } : { views: 3330, optins: 93 },
+});
+
+export const releasesFor = (slug) => [
+  release(slug, 3, 2),
+  release(slug, 2, 18),
+  release(slug, 1, 42),
+];
+
+const withSeededSplitTest = (funnels) => funnels.map((funnel) => funnel.slug !== 'home-value-workshop' ? funnel : {
+  ...funnel,
+  // Split tests are keyed by the page they target.
+  splitTests: {
+    registration: {
+      status: 'running',
+      controlWeight: 70,
+      variation: { key: 'variation-b', name: 'Variation B', createdAt: iso(1) },
+      observed: { control: 534, variation: 229 },
+      optins: { control: 41, variation: 29 },
+      versionNumber: 4,
+    },
+  },
+  // Every split-test variation is its own funnel version; base fixture
+  // releases end at v3, so the seeded running variation is v4. The list is
+  // materialized (newest first) so versions can be renamed and extended.
+  releases: [
+    {
+      id: 'split-test-b-v4',
+      version: 4,
+      status: 'split_test',
+      committedAt: iso(1),
+      page: 'registration',
+      note: 'Split-test variation "Variation B" created as its own funnel version on the Registration page. It receives 30% of the randomised live traffic.',
+      variation: { key: 'variation-b', name: 'Variation B', createdAt: iso(1) },
+      metrics: { views: 229, optins: 29 },
+    },
+    ...releasesFor('home-value-workshop'),
+  ],
+  splitTestHistory: [
+    {
+      page: 'registration',
+      variation: { key: 'variation-a1', name: 'Shorter Form', duplicateOfControl: false },
+      controlWeight: 50,
+      observed: { control: 812, variation: 794 },
+      optins: { control: 61, variation: 55 },
+      startedAt: iso(34),
+      endedAt: iso(21),
+      outcome: 'control',
+    },
+  ],
+});
+
 export const sandboxState = {
-  production: structuredClone(baseFunnels),
+  production: withSeededSplitTest(structuredClone(baseFunnels)),
   test: structuredClone([
     ...baseFunnels,
     {
@@ -64,21 +133,6 @@ export const configFor = (funnel, mode) => ({
     { key: 'release', label: 'Release transport', ok: false, blocker: false, detail: 'Intentionally unavailable in the contributor sandbox.' },
   ],
 });
-
-const release = (slug, version, daysAgo, status = 'deployed_verified') => ({
-  id: `fixture-${slug}-v${version}`,
-  version,
-  status,
-  committedAt: iso(daysAgo),
-  deploymentVerification: { verifiedAt: iso(daysAgo) },
-  publicPageValues: { fixture_proof_count: version === 3 ? '7,104' : '6,980' },
-});
-
-export const releasesFor = (slug) => [
-  release(slug, 3, 2),
-  release(slug, 2, 18),
-  release(slug, 1, 42),
-];
 
 export const statusFor = (slug) => ({
   ok: true,
