@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  configFor, diagnosisFor, funnelTypes, historyFor, releasesFor, sandboxState, statusFor,
+  FUNNEL_PAGES, configFor, diagnosisFor, funnelTypes, historyFor, releasesFor, sandboxState, statusFor,
 } from './fixtures.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
@@ -69,19 +69,21 @@ const pushRelease = (funnel, slug, idPrefix, entry) => {
 };
 
 // Every finished split test — ended or decided — is archived so the console
-// can show what was tested previously.
-const archiveSplitTest = (funnel, outcome) => {
-  const split = funnel.splitTest;
+// can show what was tested previously. Tests are per page.
+const archiveSplitTest = (funnel, pageDef, outcome) => {
+  const split = funnel.splitTests[pageDef.key];
   funnel.splitTestHistory = funnel.splitTestHistory || [];
   funnel.splitTestHistory.push({
+    page: pageDef.key,
     variation: structuredClone(split.variation),
     controlWeight: split.controlWeight,
     observed: structuredClone(split.observed),
+    optins: split.optins ? structuredClone(split.optins) : null,
     startedAt: split.variation.createdAt || null,
     endedAt: new Date().toISOString(),
     outcome,
   });
-  funnel.splitTest = null;
+  delete funnel.splitTests[pageDef.key];
 };
 
 // A variation created from the console starts as an exact duplicate of the
@@ -90,27 +92,60 @@ const archiveSplitTest = (funnel, outcome) => {
 // sandbox label and the tests can tell duplicates apart. Once a variation is
 // picked as the winner it is promoted: the live page (and any later duplicate
 // arms of it) render the promoted content under the normal live kicker.
-const previewDocument = (slug, kind, variation = null, promoted = null) => {
+// Content differs per funnel page: registration carries the inert opt-in
+// form; confirmation is the post-registration page.
+const PAGE_COPY = {
+  registration: {
+    control: { h1: 'A clearer path to your next move', p: 'See the practical steps homeowners can use to plan with confidence.' },
+    edited: { h1: 'A bolder promise for your next move', p: 'This is the alternative page served to part of the randomised traffic in this split test.' },
+  },
+  confirmation: {
+    control: { h1: 'You are registered - check your email', p: 'Your spot is saved. The workshop details and a calendar invite are on their way to your inbox.' },
+    edited: { h1: 'Smart move - your seat is locked in', p: 'This is the alternative confirmation page served to part of the randomised traffic in this split test.' },
+  },
+};
+
+const previewDocument = (slug, kind, { page = FUNNEL_PAGES[0], variation = null, promoted = null } = {}) => {
   const promotedEdited = Boolean(promoted && !promoted.duplicateOfControl);
   const edited = variation ? (!variation.duplicateOfControl || promotedEdited) : kind === 'live' && promotedEdited;
+  const copy = (PAGE_COPY[page.key] || PAGE_COPY.registration)[edited ? 'edited' : 'control'];
+  const form = page.key === 'registration' ? `
+<form action="/blocked-submission" method="post"><label>Name <input name="name" value="Sample Visitor" disabled></label>
+<label>Phone <input name="phone" value="+1 555 010 0200" disabled></label><button disabled>Submission disabled</button></form>` : '';
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${slug} synthetic preview</title><link rel="stylesheet" href="/preview.css"></head>
 <body><main class="preview-page${edited ? ' variation' : ''}"><span class="preview-kicker">${variation ? `SYNTHETIC SPLIT-TEST ARM - ${variation.name.toUpperCase()}` : kind === 'live' ? 'SYNTHETIC CURRENT VERSION' : 'SYNTHETIC EDITABLE DRAFT'}</span>
-<h1>${edited ? 'A bolder promise for your next move' : 'A clearer path to your next move'}</h1><p>${edited ? 'This is the alternative page served to part of the randomised traffic in this split test.' : 'See the practical steps homeowners can use to plan with confidence.'}</p>
-<form action="/blocked-submission" method="post"><label>Name <input name="name" value="Sample Visitor" disabled></label>
-<label>Phone <input name="phone" value="+1 555 010 0200" disabled></label><button disabled>Submission disabled</button></form>
-<small>Fixture: ${slug}${variation ? ` (${variation.key}${variation.duplicateOfControl ? ', duplicated from control' : ''})` : ''}. This page is generated locally and cannot submit, track, or navigate externally.</small></main></body></html>`;
+<h1>${copy.h1}</h1><p>${copy.p}</p>${form}
+<small>Fixture: ${slug} (${page.label.toLowerCase()}${variation ? `, ${variation.key}${variation.duplicateOfControl ? ', duplicated from control' : ''}` : ''}). This page is generated locally and cannot submit, track, or navigate externally.</small></main></body></html>`;
 };
 
-/** Weighted, sticky arm assignment for a running split test. Forced arms (the
- * console's side-by-side previews) never count as visits or set the cookie. */
-const splitArmFor = (req, url, slug, split) => {
+/** Weighted, sticky arm assignment for a running split test. Stickiness is
+ * per funnel page. Forced arms (the console's side-by-side previews) never
+ * count as visits or set the cookie. */
+const splitArmFor = (req, url, slug, pageKey, split) => {
   const forced = url.searchParams.get('split_force');
   if (forced === 'control' || forced === 'variation') return { arm: forced, forced: true };
-  const sticky = String(req.headers.cookie || '').match(new RegExp(`(?:^|;\\s*)demo_split_${slug}=(control|variation)(?:;|$)`));
+  const sticky = String(req.headers.cookie || '').match(new RegExp(`(?:^|;\\s*)demo_split_${slug}_${pageKey}=(control|variation)(?:;|$)`));
   if (sticky) return { arm: sticky[1], forced: false, sticky: true };
   return { arm: Math.random() * 100 < split.controlWeight ? 'control' : 'variation', forced: false, sticky: false };
+};
+
+// Synthetic funnel analytics: registration-page loads count as views, and a
+// fixed share of them simulate an opt-in (the sandbox's forms are inert, so
+// submissions cannot happen for real). Console thumbnails (?console=1) and
+// forced split arms never count.
+const SYNTHETIC_OPTIN_RATE = 0.09;
+
+const countLiveView = (funnel, url, pageDef, split = null, arm = null) => {
+  if (!funnel || pageDef.key !== 'registration') return;
+  if (url.searchParams.has('console') || url.searchParams.has('split_force')) return;
+  funnel.metrics = funnel.metrics || { views: 0, optins: 0 };
+  funnel.metrics.views += 1;
+  if (Math.random() < SYNTHETIC_OPTIN_RATE) {
+    funnel.metrics.optins += 1;
+    if (split?.optins && arm) split.optins[arm] += 1;
+  }
 };
 
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
@@ -223,45 +258,45 @@ export const createSandboxServer = () => {
       return reply(200, { success: true, simulated: true, release: structuredClone(release) });
     }
 
-    const winnerMatch = path.match(/^\/funnels\/([a-z0-9-]+)\/split-test\/winner$/);
+    const winnerMatch = path.match(/^\/funnels\/([a-z0-9-]+)\/split-test\/([a-z-]+)\/winner$/);
     if (winnerMatch) {
       if (req.method !== 'POST') return reply(405, { success: false, error: 'Unsupported split-test method.' });
       const funnel = findFunnel(winnerMatch[1], 'production');
       if (!funnel) return reply(404, { success: false, error: 'Synthetic funnel not found.' });
-      if (!funnel.splitTest) return reply(404, { success: false, error: 'No split test is running for this synthetic funnel.' });
+      const pageDef = FUNNEL_PAGES.find((item) => item.key === winnerMatch[2]);
+      if (!pageDef) return reply(404, { success: false, error: 'Unknown synthetic page.' });
+      const split = funnel.splitTests?.[pageDef.key];
+      if (!split) return reply(404, { success: false, error: 'No split test is running for this synthetic page.' });
       let value;
       try { value = await bodyJson(req); } catch (error) { return reply(400, { success: false, error: error.message }); }
       if (value.winner !== 'control' && value.winner !== 'variation') {
         return reply(400, { success: false, error: "winner must be 'control' or 'variation'." });
       }
       if (value.winner === 'variation') {
-        const split = funnel.splitTest;
-        funnel.promotedVariation = structuredClone(split.variation);
+        funnel.promotedVariations = funnel.promotedVariations || {};
+        funnel.promotedVariations[pageDef.key] = structuredClone(split.variation);
         pushRelease(funnel, winnerMatch[1], 'winner-b', {
           status: 'deployed_verified',
           committedAt: new Date().toISOString(),
           deploymentVerification: { verifiedAt: new Date().toISOString() },
+          page: pageDef.key,
           variation: structuredClone(split.variation),
-          note: `"${split.variation.name}" won the split test (${split.observed.variation} vs ${split.observed.control} randomised visits) and is now the live funnel.`,
+          note: `"${split.variation.name}" won the split test on the ${pageDef.label} (${split.observed.variation} vs ${split.observed.control} randomised visits) and is now the live page.`,
         });
       }
-      archiveSplitTest(funnel, value.winner);
-      return reply(200, { success: true, simulated: true, splitTest: null, history: structuredClone(funnel.splitTestHistory) });
+      archiveSplitTest(funnel, pageDef, value.winner);
+      return reply(200, { success: true, simulated: true, history: structuredClone(funnel.splitTestHistory) });
     }
 
-    const splitMatch = path.match(/^\/funnels\/([a-z0-9-]+)\/split-test$/);
-    if (splitMatch) {
-      const funnel = findFunnel(splitMatch[1], 'production');
+    const splitPageMatch = path.match(/^\/funnels\/([a-z0-9-]+)\/split-test\/([a-z-]+)$/);
+    if (splitPageMatch) {
+      const funnel = findFunnel(splitPageMatch[1], 'production');
       if (!funnel) return reply(404, { success: false, error: 'Synthetic funnel not found.' });
-      if (req.method === 'GET') {
-        return reply(200, {
-          success: true,
-          splitTest: funnel.splitTest ? structuredClone(funnel.splitTest) : null,
-          history: structuredClone(funnel.splitTestHistory || []),
-        });
-      }
+      const pageDef = FUNNEL_PAGES.find((item) => item.key === splitPageMatch[2]);
+      if (!pageDef) return reply(404, { success: false, error: 'Unknown synthetic page.' });
+      funnel.splitTests = funnel.splitTests || {};
       if (req.method === 'POST') {
-        if (funnel.splitTest) return reply(409, { success: false, error: 'A split test already exists for this synthetic funnel.' });
+        if (funnel.splitTests[pageDef.key]) return reply(409, { success: false, error: 'A split test already exists for this synthetic page.' });
         let value;
         try { value = await bodyJson(req); } catch (error) { return reply(400, { success: false, error: error.message }); }
         const name = String(value.name || 'Variation B').replace(/[^\w .-]/g, '').trim().slice(0, 60) || 'Variation B';
@@ -269,37 +304,55 @@ export const createSandboxServer = () => {
         if (!Number.isInteger(weight) || weight < 0 || weight > 100) {
           return reply(400, { success: false, error: 'controlWeight must be an integer between 0 and 100.' });
         }
-        funnel.splitTest = {
+        funnel.splitTests[pageDef.key] = {
           status: 'running',
           controlWeight: weight,
           variation: { key: 'variation-b', name, createdAt: new Date().toISOString(), duplicateOfControl: true },
           observed: { control: 0, variation: 0 },
+          optins: { control: 0, variation: 0 },
         };
-        pushRelease(funnel, splitMatch[1], 'split-test-b', {
+        pushRelease(funnel, splitPageMatch[1], 'split-test-b', {
           status: 'split_test',
-          committedAt: funnel.splitTest.variation.createdAt,
-          variation: structuredClone(funnel.splitTest.variation),
-          note: `Split-test variation "${name}" created as its own funnel version. It duplicates the control page and receives ${100 - weight}% of the randomised live traffic.`,
+          committedAt: funnel.splitTests[pageDef.key].variation.createdAt,
+          page: pageDef.key,
+          variation: structuredClone(funnel.splitTests[pageDef.key].variation),
+          note: `Split-test variation "${name}" created as its own funnel version on the ${pageDef.label}. It duplicates the control page and receives ${100 - weight}% of the randomised live traffic.`,
         });
-        return reply(201, { success: true, simulated: true, splitTest: structuredClone(funnel.splitTest) });
+        return reply(201, { success: true, simulated: true, splitTest: structuredClone(funnel.splitTests[pageDef.key]) });
       }
       if (req.method === 'PUT') {
-        if (!funnel.splitTest) return reply(404, { success: false, error: 'No split test is running for this synthetic funnel.' });
+        const split = funnel.splitTests[pageDef.key];
+        if (!split) return reply(404, { success: false, error: 'No split test is running for this synthetic page.' });
         let value;
         try { value = await bodyJson(req); } catch (error) { return reply(400, { success: false, error: error.message }); }
         const weight = Number(value.controlWeight);
         if (!Number.isInteger(weight) || weight < 0 || weight > 100) {
           return reply(400, { success: false, error: 'controlWeight must be an integer between 0 and 100.' });
         }
-        funnel.splitTest.controlWeight = weight;
-        return reply(200, { success: true, simulated: true, splitTest: structuredClone(funnel.splitTest) });
+        split.controlWeight = weight;
+        return reply(200, { success: true, simulated: true, splitTest: structuredClone(split) });
       }
       if (req.method === 'DELETE') {
-        if (!funnel.splitTest) return reply(404, { success: false, error: 'No split test is running for this synthetic funnel.' });
-        archiveSplitTest(funnel, 'ended');
+        if (!funnel.splitTests[pageDef.key]) return reply(404, { success: false, error: 'No split test is running for this synthetic page.' });
+        archiveSplitTest(funnel, pageDef, 'ended');
         return reply(200, { success: true, simulated: true, splitTest: null });
       }
       return reply(405, { success: false, error: 'Unsupported split-test method.' });
+    }
+
+    const splitMatch = path.match(/^\/funnels\/([a-z0-9-]+)\/split-test$/);
+    if (splitMatch) {
+      if (req.method !== 'GET') return reply(405, { success: false, error: 'Unsupported split-test method.' });
+      const funnel = findFunnel(splitMatch[1], 'production');
+      if (!funnel) return reply(404, { success: false, error: 'Synthetic funnel not found.' });
+      return reply(200, {
+        success: true,
+        pages: FUNNEL_PAGES.map((item) => ({
+          ...item,
+          splitTest: funnel.splitTests?.[item.key] ? structuredClone(funnel.splitTests[item.key]) : null,
+        })),
+        history: structuredClone(funnel.splitTestHistory || []),
+      });
     }
 
     const stateMatch = path.match(/^\/funnels\/([a-z0-9-]+)\/(go-live|pause)$/);
@@ -336,7 +389,7 @@ export const createSandboxServer = () => {
       return json(res, 200, statusFor(url.searchParams.get('funnel') || 'fixture'));
     }
     if (req.method === 'GET' && url.pathname === '/api/coauthor/pages') {
-      return json(res, 200, { ok: true, pages: [{ label: 'Landing page', path: '' }, { label: 'Thank you', path: 'thank-you/' }] });
+      return json(res, 200, { ok: true, pages: FUNNEL_PAGES.map(({ label, path: pagePath }) => ({ label, path: pagePath })) });
     }
     if (req.method === 'GET' && url.pathname === '/api/coauthor/history') {
       return json(res, 200, historyFor(url.searchParams.get('funnel') || 'fixture'));
@@ -353,22 +406,30 @@ export const createSandboxServer = () => {
     if (!funnel) return json(res, 404, { success: false, error: 'Synthetic funnel not found.' });
     const release = funnelReleases(funnel, versionPreview[1]).find((item) => Number(item.version) === Number(versionPreview[2]));
     if (!release) return json(res, 404, { success: false, error: 'Synthetic version not found.' });
-    if (release.status === 'split_test') return html(res, 200, previewDocument(versionPreview[1], 'live', release.variation || null));
-    return html(res, 200, previewDocument(versionPreview[1], 'live', null, release.variation || null));
+    const pageDef = FUNNEL_PAGES.find((item) => item.key === (release.page || 'registration')) || FUNNEL_PAGES[0];
+    if (release.status === 'split_test') return html(res, 200, previewDocument(versionPreview[1], 'live', { page: pageDef, variation: release.variation || null }));
+    return html(res, 200, previewDocument(versionPreview[1], 'live', { page: pageDef, promoted: release.variation || null }));
   }
 
-  const preview = url.pathname.match(/^\/preview\/(test|live)\/([a-z0-9-]+)(?:\/.*)?$/);
+  const preview = url.pathname.match(/^\/preview\/(test|live)\/([a-z0-9-]+)(?:\/(.*))?$/);
   if (req.method === 'GET' && preview) {
-    const [, kind, slug] = preview;
+    const [, kind, slug, restRaw] = preview;
+    const rest = (restRaw || '').replace(/\/+$/, '');
+    const pageDef = FUNNEL_PAGES.find((item) => item.path.replace(/\/+$/, '') === rest);
+    if (!pageDef) return json(res, 404, { success: false, error: 'Unknown synthetic page.' });
     const funnel = kind === 'live' ? findFunnel(slug, 'production') : null;
-    const promoted = funnel?.promotedVariation || null;
-    const split = funnel?.splitTest;
-    if (!split || split.status !== 'running') return html(res, 200, previewDocument(slug, kind, null, promoted));
-    const assignment = splitArmFor(req, url, slug, split);
+    const promoted = funnel?.promotedVariations?.[pageDef.key] || null;
+    const split = funnel?.splitTests?.[pageDef.key];
+    if (!split || split.status !== 'running') {
+      countLiveView(funnel, url, pageDef);
+      return html(res, 200, previewDocument(slug, kind, { page: pageDef, promoted }));
+    }
+    const assignment = splitArmFor(req, url, slug, pageDef.key, split);
     if (!assignment.forced) split.observed[assignment.arm] += 1;
+    countLiveView(funnel, url, pageDef, split, assignment.arm);
     const extra = assignment.forced || assignment.sticky
-      ? {} : { 'Set-Cookie': `demo_split_${slug}=${assignment.arm}; Path=/; SameSite=Strict` };
-    return html(res, 200, previewDocument(slug, kind, assignment.arm === 'variation' ? split.variation : null, promoted), extra);
+      ? {} : { 'Set-Cookie': `demo_split_${slug}_${pageDef.key}=${assignment.arm}; Path=/; SameSite=Strict` };
+    return html(res, 200, previewDocument(slug, kind, { page: pageDef, variation: assignment.arm === 'variation' ? split.variation : null, promoted }), extra);
   }
   if (req.method === 'GET' && url.pathname === '/preview.css') {
     const css = '.preview-page{font-family:system-ui;max-width:720px;margin:12vh auto;padding:32px;color:#132238}.preview-kicker{color:#8b5a00;font-weight:700;font-size:12px}.preview-page h1{font-size:clamp(36px,7vw,72px);line-height:1}.preview-page form{display:grid;gap:14px;margin:32px 0;padding:24px;background:#edf3f8}.preview-page label{display:grid;gap:5px}.preview-page input,.preview-page button{padding:12px}.preview-page.variation{background:#fff7ed}.preview-page.variation .preview-kicker{color:#b45309}.preview-page.variation form{background:#fde8cf}';

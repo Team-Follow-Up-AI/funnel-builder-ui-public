@@ -598,7 +598,7 @@ function livePreviewThumb(canonicalUrl, slug, width = LIVE_THUMB_WIDTH) {
         loading: "lazy",
         tabindex: "-1",
         "aria-hidden": "true",
-        ...previewFrameAttributes(canonicalUrl)
+        ...previewFrameAttributes(`${canonicalUrl}${canonicalUrl.includes("?") ? "&" : "?"}console=1`)
     });
     frame.style.width = `${device.width}px`;
     frame.style.height = `${device.height}px`;
@@ -1501,6 +1501,7 @@ async function renderFunnel(view, slug, request) {
         }, `Latest release is incomplete. ${describeRelease(latestRelease).text}`));
     }
     if (published) wrap.append(readOnlyConfigCard(c));
+    if (published && c.metrics) wrap.append(performanceCard(c.metrics));
     if (published && productionUrl) wrap.append(splitTestCard(slug, productionUrl, splitState, testConfig.success));
     const releaseRows = releases.length ? releases.map(release => versionRow(slug, release, deploymentIdentity, splitState)) : [ el("div", {
         class: history.ok ? "body muted" : "body err"
@@ -1970,7 +1971,7 @@ const SPLIT_THUMB_WIDTH = 264;
 
 const splitArmUrl = (canonicalUrl, arm) => `${canonicalUrl}${canonicalUrl.includes("?") ? "&" : "?"}split_force=${arm}`;
 
-function splitArmPanel({flag: flag, name: name, weightPill: weightPill, url: url, editHref: editHref, canEdit: canEdit, visits: visits, pickWinner: pickWinner}) {
+function splitArmPanel({flag: flag, name: name, weightPill: weightPill, url: url, editHref: editHref, canEdit: canEdit, visits: visits, optins: optins, pickWinner: pickWinner}) {
     return el("div", {
         class: "split-arm"
     }, el("span", {
@@ -1998,13 +1999,76 @@ function splitArmPanel({flag: flag, name: name, weightPill: weightPill, url: url
         onclick: pickWinner
     }, "🏆 Pick winner") : null), visits != null ? el("span", {
         class: "mono muted"
-    }, `${visits} randomised visits`) : null);
+    }, `${visits} randomised visits`) : null, optins != null ? el("span", {
+        class: "mono muted"
+    }, `${optins} opt-ins${visits > 0 ? ` (${(optins / visits * 100).toFixed(1)}%)` : ""}`) : null);
+}
+
+const PAGE_THUMB_WIDTH = 148;
+
+function performanceCard(metrics) {
+    const views = Number(metrics.views) || 0;
+    const optins = Number(metrics.optins) || 0;
+    const rate = views > 0 ? `${(optins / views * 100).toFixed(1)}%` : "—";
+    const tile = (label, value, hint) => el("div", {
+        class: "stat-tile"
+    }, el("span", {
+        class: "stat-label"
+    }, label), el("span", {
+        class: "stat-value"
+    }, value), hint ? el("span", {
+        class: "muted"
+    }, hint) : null);
+    return el("div", {
+        class: "card"
+    }, el("h2", {}, "Performance", el("span", {
+        class: "pill env"
+    }, "Synthetic")), el("div", {
+        class: "stat-grid"
+    }, tile("Views", views.toLocaleString(), "Registration page loads"), tile("Opt-ins", optins.toLocaleString(), "Simulated form submissions"), tile("Opt-in rate", rate, views > 0 ? `${optins.toLocaleString()} of ${views.toLocaleString()} views` : "No views yet")));
 }
 
 function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
     const card = el("div", {
         class: "card"
     });
+    card.append(el("h2", {}, "Split tests", el("span", {
+        class: "pill env"
+    }, "Synthetic")));
+    if (!splitResponse.success) {
+        card.append(el("div", {
+            class: "body err"
+        }, `Split-test state is unavailable. ${splitResponse.error || "The Production API did not answer."}`));
+        return card;
+    }
+    const pages = Array.isArray(splitResponse.pages) ? splitResponse.pages : [];
+    card.append(el("div", {
+        class: "body muted"
+    }, "Each page of this funnel can run its own split test. Click a page to manage its test."));
+    pages.forEach(page => card.append(pageSplitRow(slug, canonicalUrl, page, canEdit)));
+    const pageLabel = key => pages.find(page => page.key === key)?.label || key || "Registration page";
+    const history = Array.isArray(splitResponse.history) ? splitResponse.history : [];
+    if (history.length) card.append(el("div", {
+        class: "split-history"
+    }, el("span", {
+        class: "split-flag"
+    }, "Previous tests"), ...[ ...history ].reverse().map(entry => el("div", {
+        class: "split-history-row"
+    }, el("strong", {}, `${pageLabel(entry.page)}: Control vs ${entry.variation.name}`), el("span", {
+        class: `pill ${entry.outcome === "ended" ? "env" : "live"}`
+    }, entry.outcome === "variation" ? `Winner: ${entry.variation.name}` : entry.outcome === "control" ? "Winner: Control" : "No winner"), el("span", {
+        class: "muted"
+    }, `${when(entry.startedAt)} → ${when(entry.endedAt)}`), el("span", {
+        class: "mono muted"
+    }, `Final split ${entry.controlWeight}/${100 - entry.controlWeight} · ${entry.observed?.control ?? 0} vs ${entry.observed?.variation ?? 0} visits${entry.optins ? ` · ${entry.optins.control} vs ${entry.optins.variation} opt-ins` : ""}`)))));
+    return card;
+}
+
+// One expandable row per funnel page inside the Split tests card: the summary
+// shows a live picture of the page and its test status; expanding it opens
+// the split-test console scoped to that page.
+function pageSplitRow(slug, canonicalUrl, page, canEdit) {
+    const base = page.path ? `${canonicalUrl.replace(/\/+$/, "")}/${page.path}` : canonicalUrl;
     const statusPill = el("span", {
         class: "pill",
         style: "display:none"
@@ -2014,15 +2078,9 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
         statusPill.className = `pill ${kind}`;
         statusPill.textContent = text;
     };
-    card.append(el("h2", {}, "Split test", el("span", {
-        class: "pill env"
-    }, "Synthetic"), statusPill));
-    if (!splitResponse.success) {
-        card.append(el("div", {
-            class: "body err"
-        }, `Split-test state is unavailable. ${splitResponse.error || "The Production API did not answer."}`));
-        return card;
-    }
+    const summaryLine = el("div", {
+        class: "muted"
+    });
     const notice = el("div", {
         class: "body muted split-notice",
         role: "status",
@@ -2035,39 +2093,23 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
         notice.textContent = text || "";
     };
     const content = el("div", {});
-    card.append(content, notice);
-    const history = Array.isArray(splitResponse.history) ? splitResponse.history : [];
-    if (history.length) card.append(el("div", {
-        class: "split-history"
-    }, el("span", {
-        class: "split-flag"
-    }, "Previous tests"), ...[ ...history ].reverse().map(entry => el("div", {
-        class: "split-history-row"
-    }, el("strong", {}, `Control vs ${entry.variation.name}`), el("span", {
-        class: `pill ${entry.outcome === "ended" ? "env" : "live"}`
-    }, entry.outcome === "variation" ? `Winner: ${entry.variation.name}` : entry.outcome === "control" ? "Winner: Control" : "No winner"), el("span", {
-        class: "muted"
-    }, `${when(entry.startedAt)} → ${when(entry.endedAt)}`), el("span", {
-        class: "mono muted"
-    }, `Final split ${entry.controlWeight}/${100 - entry.controlWeight} · ${entry.observed?.control ?? 0} control · ${entry.observed?.variation ?? 0} variation visits`)))));
-    const controlPanel = (weightPill, visits) => splitArmPanel({
-        flag: "Control",
-        name: "Variation A",
-        weightPill: weightPill,
-        url: splitArmUrl(canonicalUrl, "control"),
-        editHref: `#/funnels/${slug}/build`,
-        canEdit: canEdit,
-        visits: visits
-    });
     const renderEmpty = () => {
         setStatus("", "");
+        summaryLine.textContent = "No split test running.";
         content.replaceChildren(el("div", {
             class: "split-grid"
-        }, controlPanel(el("span", {
-            class: "pill env"
-        }, "100%")), el("div", {
+        }, splitArmPanel({
+            flag: "Control",
+            name: "Variation A",
+            weightPill: el("span", {
+                class: "pill env"
+            }, "100%"),
+            url: splitArmUrl(base, "control"),
+            editHref: `#/funnels/${slug}/build`,
+            canEdit: canEdit
+        }), el("div", {
             class: "split-middle muted"
-        }, el("strong", {}, "Start split test"), el("span", {}, "Send part of the randomised live traffic to an alternative page.")), el("div", {
+        }, el("strong", {}, "Start split test"), el("span", {}, `Send part of the randomised live traffic to an alternative ${page.label.toLowerCase()}.`)), el("div", {
             class: "split-create"
         }, el("button", {
             class: "act go",
@@ -2079,8 +2121,8 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
     };
     // renderArms draws the two-arm console. saved is the splitTest object the
     // server already holds, or null for a variation that was just created in
-    // the UI: that one is a local duplicate of the control page and nothing is
-    // sent to the server until Save.
+    // the UI: that one is a local duplicate of the page and nothing is sent
+    // to the server until Save.
     const renderArms = (saved) => {
         const pending = !saved;
         const split = saved || {
@@ -2093,6 +2135,10 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
             observed: null
         };
         setStatus(pending ? "draft" : "live", pending ? "Unsaved" : "Running");
+        const paintSummary = () => {
+            summaryLine.textContent = pending ? "Unsaved variation - not live yet." : `Running: Control ${split.controlWeight}% · ${split.variation.name} ${100 - split.controlWeight}%`;
+        };
+        paintSummary();
         let controlWeight = split.controlWeight;
         const readout = el("span", {
             class: "mono"
@@ -2115,7 +2161,7 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
             max: "100",
             step: "5",
             value: String(controlWeight),
-            "aria-label": "Percent of randomised traffic sent to the control page"
+            "aria-label": `Percent of randomised traffic sent to the control ${page.label.toLowerCase()}`
         });
         const saveButton = el("button", {
             class: "act go",
@@ -2132,7 +2178,7 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
         });
         saveButton.addEventListener("click", async () => {
             saveButton.disabled = true;
-            const saved2 = await api(`/funnels/${slug}/split-test`, {
+            const saved2 = await api(`/funnels/${slug}/split-test/${page.key}`, {
                 mode: "production",
                 method: pending ? "POST" : "PUT",
                 body: pending ? {
@@ -2148,6 +2194,7 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
                 split.controlWeight = saved2.splitTest.controlWeight;
                 controlWeight = split.controlWeight;
                 say(`Saved. New randomised visitors now split ${controlWeight}/${100 - controlWeight}.`);
+                paintSummary();
             } else {
                 saveButton.disabled = false;
                 say(saved2.error || (pending ? "The variation could not be saved." : "The traffic split could not be saved."), true);
@@ -2155,9 +2202,9 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
             paintReadout();
         });
         const pickWinner = (arm, armName) => async () => {
-            const message = arm === "control" ? "Keep Control (Variation A) as the live funnel? This ends the split test and all traffic returns to it." : `Make ${armName} the live funnel? This ends the split test and sends all traffic to it.`;
+            const message = arm === "control" ? `Keep Control (Variation A) as the live ${page.label.toLowerCase()}? This ends the split test and all traffic returns to it.` : `Make ${armName} the live ${page.label.toLowerCase()}? This ends the split test and sends all traffic to it.`;
             if (!confirm(message)) return;
-            const picked = await api(`/funnels/${slug}/split-test/winner`, {
+            const picked = await api(`/funnels/${slug}/split-test/${page.key}/winner`, {
                 mode: "production",
                 method: "POST",
                 body: {
@@ -2177,9 +2224,9 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
                     renderEmpty();
                     return;
                 }
-                if (!confirm("End this split test? All live traffic returns to the control page.")) return;
+                if (!confirm(`End this split test? All live traffic returns to the control ${page.label.toLowerCase()}.`)) return;
                 event.target.disabled = true;
-                const ended = await api(`/funnels/${slug}/split-test`, {
+                const ended = await api(`/funnels/${slug}/split-test/${page.key}`, {
                     mode: "production",
                     method: "DELETE",
                     syncChrome: false
@@ -2195,10 +2242,11 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
             flag: "Control",
             name: "Variation A",
             weightPill: controlWeightPill,
-            url: splitArmUrl(canonicalUrl, "control"),
+            url: splitArmUrl(base, "control"),
             editHref: `#/funnels/${slug}/build`,
             canEdit: canEdit,
             visits: split.observed?.control,
+            optins: split.optins?.control,
             pickWinner: pending ? null : pickWinner("control", "Variation A")
         }), el("div", {
             class: "split-middle"
@@ -2210,18 +2258,28 @@ function splitTestCard(slug, canonicalUrl, splitResponse, canEdit) {
             flag: "Variation",
             name: split.variation.name,
             weightPill: variationWeightPill,
-            url: splitArmUrl(canonicalUrl, "variation"),
+            url: splitArmUrl(base, "variation"),
             editHref: `#/funnels/${slug}/build/variation`,
             canEdit: canEdit,
             visits: split.observed?.variation,
+            optins: split.optins?.variation,
             pickWinner: pending ? null : pickWinner("variation", split.variation.name)
         })), el("div", {
             class: "split-save"
         }, saveButton));
-        say(pending ? "Unsaved variation. It duplicates the control page; live traffic stays 100% on control until you save." : "");
+        say(pending ? "Unsaved variation. It duplicates the current page; live traffic is unchanged until you save." : "");
     };
-    if (splitResponse.splitTest && splitResponse.splitTest.status === "running") renderArms(splitResponse.splitTest); else renderEmpty();
-    return card;
+    if (page.splitTest && page.splitTest.status === "running") renderArms(page.splitTest); else renderEmpty();
+    return el("details", {
+        class: "page-split-row"
+    }, el("summary", {}, livePreviewThumb(base, page.label, PAGE_THUMB_WIDTH), el("div", {
+        class: "grow"
+    }, el("div", {
+        class: "label"
+    }, page.label, statusPill), summaryLine), el("span", {
+        class: "version-caret",
+        "aria-hidden": "true"
+    }, "▸")), content, notice);
 }
 
 const VERSION_THUMB_WIDTH = 132;
@@ -2240,7 +2298,8 @@ function versionRow(slug, release, deploymentIdentity, splitResponse) {
     const fallbackName = String(release.id || "").slice(0, 12) || "unknown SHA";
     const displayName = release.name || fallbackName;
     const matchedTest = (Array.isArray(splitResponse?.history) ? splitResponse.history : []).find(entry => entry.startedAt && entry.startedAt === release.committedAt) || null;
-    const pairs = [ [ "Version", `v${release.version ?? "?"}` ], [ "Name", release.name || "—" ], [ "Record id", release.id || "—" ], [ "Status", release.status || "—" ], [ "Type", release.status === "split_test" ? "Split-test variation" : release.variation ? "Promoted split-test winner" : "Release" ], release.variation ? [ "Variation", release.variation.name ] : null, release.variation ? [ "Page content", release.variation.duplicateOfControl ? "Duplicate of control" : "Edited page" ] : null, [ "Committed", release.committedAt ? when(release.committedAt) : "—" ], [ "Verified", release.deploymentVerification?.verifiedAt ? utcWhen(release.deploymentVerification.verifiedAt) : "Not verified" ], release.publicPageValues ? [ "Public page values", publicPageValuesSummary(release) ] : null, matchedTest ? [ "Test outcome", matchedTest.outcome === "variation" ? `Winner: ${matchedTest.variation.name}` : matchedTest.outcome === "control" ? "Winner: Control" : "Ended without a winner" ] : null, matchedTest ? [ "Test traffic", `Final split ${matchedTest.controlWeight}/${100 - matchedTest.controlWeight} · ${matchedTest.observed?.control ?? 0} control · ${matchedTest.observed?.variation ?? 0} variation visits` ] : null ].filter(Boolean);
+    const releasePageLabel = release.page ? (Array.isArray(splitResponse?.pages) ? splitResponse.pages : []).find(page => page.key === release.page)?.label || release.page : null;
+    const pairs = [ [ "Version", `v${release.version ?? "?"}` ], [ "Name", release.name || "—" ], [ "Record id", release.id || "—" ], [ "Status", release.status || "—" ], [ "Type", release.status === "split_test" ? "Split-test variation" : release.variation ? "Promoted split-test winner" : "Release" ], releasePageLabel ? [ "Funnel page", releasePageLabel ] : null, release.variation ? [ "Variation", release.variation.name ] : null, release.variation ? [ "Page content", release.variation.duplicateOfControl ? "Duplicate of control" : "Edited page" ] : null, [ "Committed", release.committedAt ? when(release.committedAt) : "—" ], [ "Verified", release.deploymentVerification?.verifiedAt ? utcWhen(release.deploymentVerification.verifiedAt) : "Not verified" ], release.publicPageValues ? [ "Public page values", publicPageValuesSummary(release) ] : null, matchedTest ? [ "Test outcome", matchedTest.outcome === "variation" ? `Winner: ${matchedTest.variation.name}` : matchedTest.outcome === "control" ? "Winner: Control" : "Ended without a winner" ] : null, matchedTest ? [ "Test traffic", `Final split ${matchedTest.controlWeight}/${100 - matchedTest.controlWeight} · ${matchedTest.observed?.control ?? 0} vs ${matchedTest.observed?.variation ?? 0} visits${matchedTest.optins ? ` · ${matchedTest.optins.control} vs ${matchedTest.optins.variation} opt-ins` : ""}` ] : null ].filter(Boolean);
     const renameInput = el("input", {
         type: "text",
         class: "version-name-input",

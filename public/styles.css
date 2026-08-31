@@ -521,6 +521,21 @@ iframe.preview { display: block; border: none; background: #fff; overflow: auto;
 .split-history-row { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
 .split-history-row strong { font-size: 13px; }
 
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; padding: 14px; }
+.stat-tile { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
+.stat-label { font-size: 11.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+.stat-value { font-size: 26px; font-weight: 640; color: var(--text); font-variant-numeric: tabular-nums; }
+
+.page-split-row { border-top: 1px solid var(--border); }
+.page-split-row summary { display: flex; gap: 14px; padding: 11px 15px; align-items: center; cursor: pointer; list-style: none; }
+.page-split-row summary::-webkit-details-marker { display: none; }
+.page-split-row summary:hover { background: var(--mode-wash); }
+.page-split-row .grow { min-width: 0; flex: 1; }
+.page-split-row .label { font-weight: 560; }
+@media (max-width: 720px) {
+  .page-split-row summary { flex-wrap: wrap; }
+}
+
 .version-row { border-bottom: 1px solid var(--border); }
 .version-row:last-child { border-bottom: none; }
 .version-row summary { display: flex; gap: 14px; padding: 11px 15px; align-items: center; cursor: pointer; list-style: none; }
@@ -530,7 +545,7 @@ iframe.preview { display: block; border: none; background: #fff; overflow: auto;
 .version-row .label { font-weight: 560; }
 .version-row .headline { color: var(--dim); margin-top: 2px; }
 .version-caret { color: var(--dim); flex: 0 0 auto; transition: transform .15s ease; }
-.version-row[open] .version-caret { transform: rotate(90deg); }
+.version-row[open] .version-caret, .page-split-row[open] .version-caret { transform: rotate(90deg); }
 .version-detail { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; padding: 4px 15px 14px; }
 .version-detail-preview { display: grid; gap: 8px; justify-items: center; }
 .version-detail-data { display: grid; gap: 12px; flex: 1; min-width: 260px; }

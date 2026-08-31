@@ -113,15 +113,17 @@ test('fails closed for unknown API, page, Host, and WebSocket routes', async () 
 
 test('runs split tests with weighted, sticky, and forced preview arms', async () => {
   const seeded = await fetch(`${origin}/api/marketing/funnels/home-value-workshop/split-test`).then((value) => value.json());
-  assert.equal(seeded.splitTest.status, 'running');
-  assert.equal(seeded.splitTest.controlWeight, 70);
+  const seededRegistration = seeded.pages.find((page) => page.key === 'registration');
+  assert.equal(seededRegistration.splitTest.status, 'running');
+  assert.equal(seededRegistration.splitTest.controlWeight, 70);
+  assert.equal(seeded.pages.find((page) => page.key === 'confirmation').splitTest, null, 'each page carries its own split test');
 
-  const badCreate = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
+  const badCreate = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/registration`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Variation B', controlWeight: 140 }),
   });
   assert.equal(badCreate.status, 400, 'creating a variation with an invalid weight must fail before anything is stored');
 
-  const created = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
+  const created = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/registration`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Variation B', controlWeight: 65 }),
   });
   assert.equal(created.status, 201);
@@ -133,32 +135,32 @@ test('runs split tests with weighted, sticky, and forced preview arms', async ()
   const editedArm = await fetch(`${origin}/preview/live/home-value-workshop?split_force=variation`).then((value) => value.text());
   assert.match(editedArm, /A bolder promise for your next move/, 'the seeded, already-edited variation keeps its own content');
 
-  const duplicate = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, { method: 'POST' });
+  const duplicate = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/registration`, { method: 'POST' });
   assert.equal(duplicate.status, 409);
-  const badWeight = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
+  const badWeight = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/registration`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ controlWeight: 140 }),
   });
   assert.equal(badWeight.status, 400);
 
-  await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
+  await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/registration`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ controlWeight: 0 }),
   });
   const randomised = await fetch(`${origin}/preview/live/summer-roofing-guide`);
   assert.match(await randomised.text(), /SYNTHETIC SPLIT-TEST ARM/, 'weight 0 must send every new visitor to the variation');
-  assert.match(randomised.headers.get('set-cookie'), /demo_split_summer-roofing-guide=variation/);
+  assert.match(randomised.headers.get('set-cookie'), /demo_split_summer-roofing-guide_registration=variation/);
   const forcedControl = await fetch(`${origin}/preview/live/summer-roofing-guide?split_force=control`);
   assert.match(await forcedControl.text(), /SYNTHETIC CURRENT VERSION/, 'forced console previews must override randomisation');
   assert.equal(forcedControl.headers.get('set-cookie'), null, 'forced previews must not pin an arm');
 
-  await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
+  await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/registration`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ controlWeight: 100 }),
   });
   const pinned = await fetch(`${origin}/preview/live/summer-roofing-guide`, {
-    headers: { Cookie: 'demo_split_summer-roofing-guide=variation' },
+    headers: { Cookie: 'demo_split_summer-roofing-guide_registration=variation' },
   }).then((value) => value.text());
   assert.match(pinned, /SYNTHETIC SPLIT-TEST ARM/, 'returning visitors must keep their first arm');
 
-  const ended = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, { method: 'DELETE' });
+  const ended = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/registration`, { method: 'DELETE' });
   assert.equal((await ended.json()).splitTest, null);
   const after = await fetch(`${origin}/preview/live/summer-roofing-guide`).then((value) => value.text());
   assert.match(after, /SYNTHETIC CURRENT VERSION/);
@@ -167,32 +169,33 @@ test('runs split tests with weighted, sticky, and forced preview arms', async ()
 test('picks winners and records split-test history', async () => {
   const before = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`).then((value) => value.json());
   assert.equal(before.history.at(-1).outcome, 'ended', 'ending a split test must archive it to history');
+  assert.equal(before.history.at(-1).page, 'registration', 'archived tests record which page they tested');
   const priorRuns = before.history.length;
 
-  await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`, {
+  await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/registration`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Bolder Headline', controlWeight: 40 }),
   });
-  const badWinner = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/winner`, {
+  const badWinner = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/registration/winner`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ winner: 'both' }),
   });
   assert.equal(badWinner.status, 400);
-  const picked = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/winner`, {
+  const picked = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/registration/winner`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ winner: 'control' }),
   });
   assert.equal(picked.status, 200);
   const afterPick = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test`).then((value) => value.json());
-  assert.equal(afterPick.splitTest, null, 'picking a winner ends the split test');
+  assert.equal(afterPick.pages.find((page) => page.key === 'registration').splitTest, null, 'picking a winner ends the split test');
   assert.equal(afterPick.history.length, priorRuns + 1);
   assert.equal(afterPick.history.at(-1).outcome, 'control');
   assert.equal(afterPick.history.at(-1).variation.name, 'Bolder Headline');
   assert.equal(afterPick.history.at(-1).controlWeight, 40, 'archived tests keep their final split and observed visits');
 
-  const noRun = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/winner`, {
+  const noRun = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/registration/winner`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ winner: 'control' }),
   });
   assert.equal(noRun.status, 404);
 
-  const promoted = await fetch(`${origin}/api/marketing/funnels/home-value-workshop/split-test/winner`, {
+  const promoted = await fetch(`${origin}/api/marketing/funnels/home-value-workshop/split-test/registration/winner`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ winner: 'variation' }),
   });
   assert.equal(promoted.status, 200);
@@ -269,4 +272,32 @@ test('provenance records the current adapted presentation hashes', async () => {
     const value = await readFile(new URL(`../${entry.sandboxPath}`, import.meta.url));
     assert.equal(createHash('sha256').update(value).digest('hex'), entry.sandboxSha256, entry.sandboxPath);
   }
+});
+
+test('splits pages independently and tracks synthetic views and opt-ins', async () => {
+  const confirmation = await fetch(`${origin}/preview/live/summer-roofing-guide/thank-you/`).then((value) => value.text());
+  assert.match(confirmation, /You are registered/, 'the confirmation page renders its own content');
+  assert.equal((await fetch(`${origin}/preview/live/summer-roofing-guide/unknown-page/`)).status, 404, 'unknown pages fail closed');
+
+  const created = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/confirmation`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Warmer Thanks' }),
+  });
+  assert.equal(created.status, 201);
+  assert.equal((await created.json()).splitTest.optins.control, 0, 'new tests start their opt-in counters at zero');
+  const badPage = await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/split-test/checkout`, { method: 'POST' });
+  assert.equal(badPage.status, 404, 'unknown pages fail closed for split tests too');
+  const confirmationArm = await fetch(`${origin}/preview/live/summer-roofing-guide/thank-you/?split_force=variation`).then((value) => value.text());
+  assert.match(confirmationArm, /SYNTHETIC SPLIT-TEST ARM - WARMER THANKS/);
+  assert.match(confirmationArm, /You are registered/, 'the confirmation variation starts as a duplicate');
+
+  const readMetrics = async () => (await fetch(`${origin}/api/marketing/funnels/summer-roofing-guide/config`, {
+    headers: { 'X-Demo-Mode': 'production' },
+  }).then((value) => value.json())).config.metrics;
+  const metricsBefore = await readMetrics();
+  for (let i = 0; i < 10; i += 1) await fetch(`${origin}/preview/live/summer-roofing-guide`);
+  await fetch(`${origin}/preview/live/summer-roofing-guide?console=1`);
+  await fetch(`${origin}/preview/live/summer-roofing-guide/thank-you/`);
+  const metricsAfter = await readMetrics();
+  assert.equal(metricsAfter.views, metricsBefore.views + 10, 'registration loads count as views; console thumbnails and confirmation loads do not');
+  assert.ok(metricsAfter.optins >= metricsBefore.optins && metricsAfter.optins <= metricsBefore.optins + 10, 'a share of counted views simulate opt-ins');
 });
