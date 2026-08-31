@@ -1949,9 +1949,94 @@ function promotionReviewDialog(binding, {funnelName: funnelName, onCommit: onCom
     };
 }
 
+function livePreviewSection(canonicalUrl) {
+    const frame = el("iframe", {
+        class: "preview",
+        title: "Read-only live preview",
+        scrolling: "yes",
+        loading: "lazy",
+        ...previewFrameAttributes(canonicalUrl)
+    });
+    const previewScaler = el("div", {
+        class: "preview-scaler"
+    }, frame);
+    const previewStage = el("div", {
+        class: "preview-stage"
+    }, previewScaler);
+    const previewCanvas = el("div", {
+        class: "preview-canvas live-preview-canvas"
+    }, previewStage);
+    const dimensions = el("span", {
+        class: "viewport-dimensions mono"
+    });
+    let activeDevice = "desktop";
+    const resizePreview = () => {
+        const geometry = previewGeometry(activeDevice, previewCanvas.clientWidth, previewCanvas.clientHeight);
+        frame.style.width = `${geometry.width}px`;
+        frame.style.height = `${geometry.height}px`;
+        previewScaler.style.width = `${geometry.width}px`;
+        previewScaler.style.height = `${geometry.height}px`;
+        previewScaler.style.transform = `scale(${geometry.scale})`;
+        previewStage.style.width = `${geometry.renderedWidth}px`;
+        previewStage.style.height = `${geometry.renderedHeight}px`;
+        dimensions.textContent = `${geometry.width} × ${geometry.height}`;
+    };
+    const deviceButtons = Object.values(PREVIEW_DEVICES).map(device => el("button", {
+        type: "button",
+        class: `tab device${activeDevice === device.key ? " on" : ""}`,
+        "aria-pressed": String(activeDevice === device.key),
+        title: `${device.label} CSS viewport: ${device.width} × ${device.height}`,
+        onclick: () => {
+            activeDevice = device.key;
+            for (const button of deviceButtons) {
+                const selected = button.dataset.device === activeDevice;
+                button.classList.toggle("on", selected);
+                button.setAttribute("aria-pressed", String(selected));
+            }
+            resizePreview();
+        },
+        "data-device": device.key
+    }, device.label));
+    if (typeof ResizeObserver !== "undefined") {
+        const observer = new ResizeObserver(() => {
+            if (!previewCanvas.isConnected) {
+                observer.disconnect();
+                return;
+            }
+            resizePreview();
+        });
+        observer.observe(previewCanvas);
+    } else {
+        const onResize = () => {
+            if (!previewCanvas.isConnected) {
+                window.removeEventListener("resize", onResize);
+                return;
+            }
+            resizePreview();
+        };
+        window.addEventListener("resize", onResize);
+    }
+    requestAnimationFrame(resizePreview);
+    return el("div", {
+        class: "live-preview"
+    }, el("div", {
+        class: "live-preview-bar"
+    }, el("span", {
+        class: "label"
+    }, "Live preview"), el("span", {
+        class: "pill env"
+    }, "Synthetic"), el("span", {
+        class: "spacer"
+    }), el("span", {
+        class: "viewport-controls",
+        role: "group",
+        "aria-label": "Preview device"
+    }, ...deviceButtons, dimensions)), previewCanvas);
+}
+
 function readOnlyConfigCard(config) {
     const summary = productionSummary(config);
-    return el("div", {
+    const card = el("div", {
         class: "card"
     }, el("h2", {}, "Live configuration", el("span", {
         class: "pill env"
@@ -1987,6 +2072,8 @@ function readOnlyConfigCard(config) {
     }, issue.detail)))) : [ el("div", {
         class: "body muted"
     }, "No configuration issues are reported.") ]);
+    if (summary.canonicalUrl) card.append(livePreviewSection(summary.canonicalUrl));
+    return card;
 }
 
 function describeRelease(release) {

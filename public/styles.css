@@ -506,6 +506,14 @@ iframe.preview { display: block; border: none; background: #fff; overflow: auto;
 .preview-unavailable-copy strong { color: var(--text); }
 .preview-unavailable-copy p { color: var(--dim); line-height: 1.55; }
 
+.live-preview { border-top: 1px solid var(--border); }
+.live-preview-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 9px 14px; }
+.live-preview-bar .label { font-size: 11.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+.live-preview-canvas { height: 440px; border-top: 1px solid var(--border); }
+@media (max-width: 720px) {
+  .live-preview-canvas { height: 340px; }
+}
+
 .pill.env { color: var(--mode); border-color: var(--mode); text-transform: none; letter-spacing: 0; }
 
 
