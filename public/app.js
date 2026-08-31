@@ -2354,6 +2354,7 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
             say(dirty ? `Unsaved changes. Live traffic still splits ${split.controlWeight}/${100 - split.controlWeight} until you save.` : "");
         });
         saveButton.addEventListener("click", async () => {
+            if (pending && !confirm("Are you sure you would like to start the split test now?")) return;
             saveButton.disabled = true;
             const saved2 = await api(`/funnels/${slug}/split-test/${page.key}`, {
                 mode: "production",
@@ -2442,6 +2443,7 @@ function pageSplitRow(slug, canonicalUrl, page, canEdit, schedules = []) {
                 scheduleBox.style.display = open ? "" : "none";
                 scheduleToggle.setAttribute("aria-expanded", String(open));
                 scheduleToggle.classList.toggle("go", open);
+                saveButton.classList.toggle("go", !open);
             });
         }
         content.replaceChildren(el("div", {
